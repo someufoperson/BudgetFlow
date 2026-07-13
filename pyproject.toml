@@ -1,6 +1,6 @@
 [project]
 name = "budgetflow"
-version = "0.0.1"
+version = "0.1.0"
 description = "A tool to help manage personal financial flows. AI is used to help the user."
 readme = "README.md"
 requires-python = ">=3.13"
