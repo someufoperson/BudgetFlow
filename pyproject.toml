@@ -11,3 +11,11 @@ dependencies = [
     "requests>=2.34.2",
     "sqlalchemy>=2.0.51",
 ]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.0",
+    "pre-commit>=4.6.0",
+    "ruff>=0.15.21",
+]
+
