@@ -19,7 +19,10 @@ class ExpenseTransactionRepository:
         currency_id: int,
     ) -> ExpenseTransaction:
         expense_transaction = ExpenseTransaction(
-            name=name, expense_type=expense_type, amount=amount, currency_id=currency_id
+            name=name,
+            expense_type=expense_type,
+            amount=amount,
+            currency_id=currency_id,
         )
         self._session.add(expense_transaction)
         await self._session.flush()
