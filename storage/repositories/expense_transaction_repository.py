@@ -4,7 +4,8 @@ from decimal import Decimal
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from storage.models.expense_transaction import ExpenseTransaction, ExpenseType
+from domain.enums import ExpenseType
+from storage.models.expense_transaction import ExpenseTransaction
 
 
 class ExpenseTransactionRepository:

@@ -3,12 +3,8 @@ from enum import StrEnum
 from sqlalchemy import String, Enum
 from sqlalchemy.orm import Mapped, mapped_column
 
+from domain.enums import CurrencyType
 from storage.models.abstract import AbstractModel
-
-
-class CurrencyType(StrEnum):
-    FIAT = "FIAT"
-    CRYPTO = "CRYPTO"
 
 
 class Currency(AbstractModel):

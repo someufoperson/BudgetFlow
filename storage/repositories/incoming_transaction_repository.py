@@ -4,7 +4,8 @@ from decimal import Decimal
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from storage.models.incoming_transaction import IncomingTransaction, IncomingType
+from domain.enums import IncomingType
+from storage.models.incoming_transaction import IncomingTransaction
 
 
 class IncomingTransactionRepository:

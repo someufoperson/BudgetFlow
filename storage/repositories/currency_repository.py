@@ -3,7 +3,8 @@ from typing import TypedDict
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from storage.models.currency import Currency, CurrencyType
+from domain.enums import CurrencyType
+from storage.models.currency import Currency
 
 
 class CurrencyUpdates(TypedDict, total=False):

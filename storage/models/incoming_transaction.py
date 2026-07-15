@@ -4,14 +4,8 @@ from enum import Enum
 from sqlalchemy import CheckConstraint, DECIMAL, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
+from domain.enums import IncomingType
 from storage.models.abstract import AbstractModel
-
-
-class IncomingType(Enum):
-    salary = "SALARY"
-    percentage_of_the_deposit = "PERCENTAGEOFTHEDEPOSIT"
-    part_time_job = "PARTTIMEJOB"
-    gift = "GIFT"
 
 
 class IncomingTransaction(AbstractModel):
