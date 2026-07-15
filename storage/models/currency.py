@@ -1,5 +1,3 @@
-from enum import StrEnum
-
 from sqlalchemy import String, Enum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -11,7 +9,7 @@ class Currency(AbstractModel):
     __tablename__ = "currencies"
 
     name: Mapped[str] = mapped_column(String(length=64), nullable=False)
-    code: Mapped[str] = mapped_column(String(16), nullable=False, unique=True)
+    code: Mapped[str] = mapped_column(String(length=16), nullable=False, unique=True)
     currency_type: Mapped[CurrencyType] = mapped_column(
         Enum(
             CurrencyType,
