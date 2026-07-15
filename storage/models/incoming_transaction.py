@@ -1,5 +1,4 @@
 from decimal import Decimal
-from enum import Enum
 
 from sqlalchemy import CheckConstraint, DECIMAL, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
