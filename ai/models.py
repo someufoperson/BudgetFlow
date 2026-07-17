@@ -32,7 +32,7 @@ class TextResponse(AIResponse):
 
 AIResponseType = Annotated[
     CreateExpenseResponse | CreateIncomingResponse | ClarifyResponse | TextResponse,
-    Field(descriminator="action"),
+    Field(discriminator="action"),
 ]
 
-ai_response_adapter = TypeAdapter(AIResponseType)
+ai_response_adapter: TypeAdapter[AIResponseType] = TypeAdapter(AIResponseType)
