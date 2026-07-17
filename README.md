@@ -35,7 +35,7 @@ Without uv:
 - Install the dependencies using command `python -m pip install -e .`
 
 With uv:
-- Use command `uv sync` for create virtual environment and install dependencies 
+- Use command `uv sync` for create virtual environment and install dependencies
 
 Activate your virtual environment if you haven't done so already using the `venv\Scripts\activate` command
 
