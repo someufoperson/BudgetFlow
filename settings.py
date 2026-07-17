@@ -9,6 +9,7 @@ BASE_DIR = Path(__file__).resolve().parent
 class Settings(BaseSettings):
     api_key: str
     endpoint: str
+    model: str
     db_name: str
 
     model_config = SettingsConfigDict(

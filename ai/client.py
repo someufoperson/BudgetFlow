@@ -7,6 +7,7 @@ class AIClient:
     def __init__(self) -> None:
         self._endpoint = settings.endpoint
         self._api_key = settings.api_key
+        self._model = settings.model
 
     def complete(
         self,
@@ -20,6 +21,7 @@ class AIClient:
                 "Content-Type": "application/json",
             },
             json={
+                "model": self._model,
                 "messages": [
                     {
                         "role": "system",
@@ -29,9 +31,16 @@ class AIClient:
                         "role": "user",
                         "content": user_prompt,
                     },
-                ]
+                ],
+                "response_format": {
+                    "type": "json_object",
+                },
+                "thinking": {
+                    "type": "disabled",
+                },
+                "stream": False,
             },
-            timeout=30,
+            timeout=45,
         )
 
         response.raise_for_status()
