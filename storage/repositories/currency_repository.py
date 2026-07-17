@@ -36,6 +36,24 @@ class CurrencyRepository:
         )
         return currency.scalar_one_or_none()
 
+    async def get_all(
+        self,
+        *,
+        currency_type: CurrencyType | None = None,
+    ) -> list[Currency]:
+        stmt = select(Currency)
+
+        if currency_type is not None:
+            stmt = stmt.where(
+                Currency.currency_type == currency_type,
+            )
+
+        stmt = stmt.order_by(Currency.code)
+
+        result = await self._session.scalars(stmt)
+
+        return list(result.all())
+
     async def delete_by_id(self, currency_id: int) -> bool:
         result = await self._session.execute(
             delete(Currency).where(Currency.id == currency_id).returning(Currency.id),
