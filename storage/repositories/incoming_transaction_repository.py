@@ -3,9 +3,11 @@ from decimal import Decimal
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from domain.enums import IncomingType
 from storage.models.incoming_transaction import IncomingTransaction
+from storage.models.currency import Currency
 
 
 class IncomingTransactionRepository:
@@ -17,13 +19,13 @@ class IncomingTransactionRepository:
         name: str,
         incoming_type: IncomingType,
         amount: Decimal,
-        currency_id: int,
+        currency: Currency,
     ) -> IncomingTransaction:
         incoming_transaction = IncomingTransaction(
             name=name,
             incoming_type=incoming_type,
             amount=amount,
-            currency_id=currency_id,
+            currency=currency,
         )
         self._session.add(incoming_transaction)
         await self._session.flush()
@@ -41,7 +43,7 @@ class IncomingTransactionRepository:
         self,
         *,
         incoming_type: IncomingType | None = None,
-        currency_id: int | None = None,
+        currency_code: str | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
     ) -> list[IncomingTransaction]:
@@ -49,16 +51,18 @@ class IncomingTransactionRepository:
             if date_from > date_to:
                 raise ValueError("date_from cannot be later than date_to")
 
-        stmt = select(IncomingTransaction)
+        stmt = select(IncomingTransaction).options(
+            selectinload(IncomingTransaction.currency)
+        )
 
         if incoming_type is not None:
             stmt = stmt.where(
                 IncomingTransaction.incoming_type == incoming_type,
             )
 
-        if currency_id is not None:
+        if currency_code is not None:
             stmt = stmt.where(
-                IncomingTransaction.currency_id == currency_id,
+                IncomingTransaction.currency_code == currency_code,
             )
 
         if date_from is not None:

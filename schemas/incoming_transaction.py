@@ -5,6 +5,7 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from domain.enums import IncomingType
+from schemas.currency import CurrencyDetails
 
 
 class CreateIncomingTransactionCommand(BaseModel):
@@ -82,6 +83,6 @@ class IncomingTransactionResult(BaseModel):
     name: str
     incoming_type: IncomingType
     amount: Decimal
-    currency_id: int
+    currency: CurrencyDetails
     created_at: datetime
     updated_at: datetime

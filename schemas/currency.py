@@ -6,6 +6,16 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from domain.enums import CurrencyType
 
 
+class CurrencyDetails(BaseModel):
+    """model for relationship"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    code: str
+    name: str
+    currency_type: CurrencyType
+
+
 class CurrencyCodeCommand(BaseModel):
     """the general model that accepts the currency code"""
 

@@ -43,7 +43,7 @@ class ExpenseTransactionService:
                 name=command.name,
                 expense_type=command.expense_type,
                 amount=command.amount,
-                currency_id=currency.id,
+                currency=currency,
             )
 
         return ExpenseTransactionResult.model_validate(transaction)
@@ -53,7 +53,7 @@ class ExpenseTransactionService:
         command: GetExpenseTransactionCommand,
     ) -> list[ExpenseTransactionResult]:
         async with self._session.begin():
-            currency_id: int | None = None
+            currency_code: str | None = None
 
             if command.currency_code is not None:
                 currency = await self._currencies.get_currency_by_code(
@@ -63,11 +63,11 @@ class ExpenseTransactionService:
                 if currency is None:
                     raise CurrencyNotFoundError(command.currency_code)
 
-                currency_id = currency.id
+                currency_code = currency.code
 
             transactions = await self._transactions.select(
                 expense_type=command.expense_type,
-                currency_id=currency_id,
+                currency_code=currency_code,
                 date_from=command.date_from,
                 date_to=command.date_to,
             )
