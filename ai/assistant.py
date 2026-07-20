@@ -4,12 +4,14 @@ from ai.client import AIClient
 from ai.models import (
     AIResponseType,
     ClarifyResponse,
+    CreateCurrencyResponse,
     CreateExpenseResponse,
     CreateIncomingResponse,
     TextResponse,
     ai_response_adapter,
 )
 from ai.prompts import SYSTEM_PROMPT
+from services.currency_service import CurrencyService
 from services.expense_transaction_service import ExpenseTransactionService
 from services.incoming_transaction_service import IncomingTransactionService
 
@@ -18,10 +20,12 @@ class Assistant:
     def __init__(
         self,
         client: AIClient,
+        currency_service: CurrencyService,
         expense_service: ExpenseTransactionService,
         incoming_service: IncomingTransactionService,
     ) -> None:
         self._client = client
+        self._currency_service = currency_service
         self._expense_service = expense_service
         self._incoming_service = incoming_service
 
@@ -42,6 +46,9 @@ class Assistant:
         user_message: str,
     ) -> str:
         response = await self.interpret(user_message)
+
+        if isinstance(response, CreateCurrencyResponse):
+            return await self._create_currency(response)
 
         if isinstance(response, CreateExpenseResponse):
             return await self._create_expense(response)
@@ -80,4 +87,17 @@ class Assistant:
             f"Добавлен доход «{transaction.name}» "
             f"на сумму {transaction.amount} "
             f"{response.arguments.currency_code}."
+        )
+
+    async def _create_currency(
+        self,
+        response: CreateCurrencyResponse,
+    ) -> str:
+        currency = await self._currency_service.create(
+            response.arguments,
+        )
+
+        return (
+            f"Добавлена валюта «{currency.name}» "
+            f"с кодом {currency.code} и типом {currency.currency_type.value}."
         )

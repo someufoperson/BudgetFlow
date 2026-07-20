@@ -2,12 +2,18 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from schemas.currency import CreateCurrencyCommand
 from schemas.expense_transaction import CreateExpenseTransactionCommand
 from schemas.incoming_transaction import CreateIncomingTransactionCommand
 
 
 class AIResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class CreateCurrencyResponse(AIResponse):
+    action: Literal["create_currency"]
+    arguments: CreateCurrencyCommand
 
 
 class CreateExpenseResponse(AIResponse):
@@ -31,7 +37,11 @@ class TextResponse(AIResponse):
 
 
 AIResponseType = Annotated[
-    CreateExpenseResponse | CreateIncomingResponse | ClarifyResponse | TextResponse,
+    CreateCurrencyResponse
+    | CreateExpenseResponse
+    | CreateIncomingResponse
+    | ClarifyResponse
+    | TextResponse,
     Field(discriminator="action"),
 ]
 

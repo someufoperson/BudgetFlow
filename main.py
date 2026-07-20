@@ -5,6 +5,7 @@ from requests import RequestException
 
 from ai.assistant import Assistant
 from ai.client import AIClient
+from services.currency_service import CurrencyService
 from services.exceptions import ServiceError
 from services.expense_transaction_service import ExpenseTransactionService
 from services.incoming_transaction_service import IncomingTransactionService
@@ -25,6 +26,11 @@ async def run_console() -> None:
     async with async_session_factory() as session:
         currency_repository = CurrencyRepository(session)
 
+        currency_service = CurrencyService(
+            session=session,
+            currency_repository=currency_repository,
+        )
+
         expense_service = ExpenseTransactionService(
             session=session,
             transaction_repository=ExpenseTransactionRepository(session),
@@ -39,6 +45,7 @@ async def run_console() -> None:
 
         assistant = Assistant(
             client=ai_client,
+            currency_service=currency_service,
             expense_service=expense_service,
             incoming_service=incoming_service,
         )
