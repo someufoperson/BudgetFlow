@@ -22,6 +22,7 @@ class AIClient:
             },
             json={
                 "model": self._model,
+                "temperature": 0.0,
                 "messages": [
                     {
                         "role": "system",
