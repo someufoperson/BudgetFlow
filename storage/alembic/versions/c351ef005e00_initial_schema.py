@@ -1,8 +1,8 @@
-"""edit FK in expense and incoming transaction model. Now use currencies.code, earlier used currencies.id
+"""initial schema
 
-Revision ID: a86283e1ecd4
-Revises: fc0a49df424e
-Create Date: 2026-07-18 02:00:21.860959
+Revision ID: c351ef005e00
+Revises:
+Create Date: 2026-07-21 00:01:07.322308
 
 """
 
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = "a86283e1ecd4"
-down_revision: Union[str, Sequence[str], None] = "fc0a49df424e"
+revision: str = "c351ef005e00"
+down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
