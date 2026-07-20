@@ -7,7 +7,10 @@ from sqlalchemy.pool import ConnectionPoolEntry
 
 from settings import settings
 
-engine = create_async_engine(f"sqlite+aiosqlite:///./{settings.db_name}", echo=False)
+engine = create_async_engine(
+    f"sqlite+aiosqlite:///{settings.database_path.as_posix()}",
+    echo=False,
+)
 
 
 @event.listens_for(engine.sync_engine, "connect")

@@ -9,7 +9,7 @@ from services.exceptions import ServiceError
 from services.expense_transaction_service import ExpenseTransactionService
 from services.incoming_transaction_service import IncomingTransactionService
 from storage.db import async_session_factory, engine
-from storage.models.base import Base
+from storage.migrations import upgrade_database
 from storage.repositories.currency_repository import CurrencyRepository
 from storage.repositories.expense_transaction_repository import (
     ExpenseTransactionRepository,
@@ -17,16 +17,6 @@ from storage.repositories.expense_transaction_repository import (
 from storage.repositories.incoming_transaction_repository import (
     IncomingTransactionRepository,
 )
-
-# Импорты нужны для регистрации моделей в Base.metadata
-import storage.models.currency  # noqa: F401
-import storage.models.expense_transaction  # noqa: F401
-import storage.models.incoming_transaction  # noqa: F401
-
-
-async def create_tables() -> None:
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
 
 
 async def run_console() -> None:
@@ -86,11 +76,11 @@ async def run_console() -> None:
 
 async def main() -> None:
     try:
-        await create_tables()
         await run_console()
     finally:
         await engine.dispose()
 
 
 if __name__ == "__main__":
+    upgrade_database()
     asyncio.run(main())

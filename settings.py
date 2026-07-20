@@ -12,6 +12,15 @@ class Settings(BaseSettings):
     model: str
     db_name: str
 
+    @property
+    def database_path(self) -> Path:
+        path = Path(self.db_name)
+
+        if path.is_absolute():
+            return path
+
+        return BASE_DIR / path
+
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
         env_file_encoding="utf-8",
