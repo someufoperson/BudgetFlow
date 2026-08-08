@@ -16,14 +16,29 @@ class CreateCurrencyResponse(AIResponse):
     arguments: CreateCurrencyCommand
 
 
-class CreateExpenseResponse(AIResponse):
-    action: Literal["create_expense"]
+class ExpenseTransactionItem(AIResponse):
+    direction: Literal["expense"]
     arguments: CreateExpenseTransactionCommand
 
 
-class CreateIncomingResponse(AIResponse):
-    action: Literal["create_income"]
+class IncomingTransactionItem(AIResponse):
+    direction: Literal["income"]
     arguments: CreateIncomingTransactionCommand
+
+
+TransactionItem = Annotated[
+    ExpenseTransactionItem | IncomingTransactionItem,
+    Field(discriminator="direction"),
+]
+
+
+class CreateTransactionResponse(AIResponse):
+    action: Literal["create_transactions"]
+
+    transactions: list[TransactionItem] = Field(
+        min_length=1,
+        max_length=20,
+    )
 
 
 class ClarifyResponse(AIResponse):
@@ -37,11 +52,7 @@ class TextResponse(AIResponse):
 
 
 AIResponseType = Annotated[
-    CreateCurrencyResponse
-    | CreateExpenseResponse
-    | CreateIncomingResponse
-    | ClarifyResponse
-    | TextResponse,
+    CreateCurrencyResponse | CreateTransactionResponse | ClarifyResponse | TextResponse,
     Field(discriminator="action"),
 ]
 

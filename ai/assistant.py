@@ -5,8 +5,9 @@ from ai.models import (
     AIResponseType,
     ClarifyResponse,
     CreateCurrencyResponse,
-    CreateExpenseResponse,
-    CreateIncomingResponse,
+    CreateTransactionResponse,
+    ExpenseTransactionItem,
+    IncomingTransactionItem,
     TextResponse,
     ai_response_adapter,
 )
@@ -50,44 +51,44 @@ class Assistant:
         if isinstance(response, CreateCurrencyResponse):
             return await self._create_currency(response)
 
-        if isinstance(response, CreateExpenseResponse):
-            return await self._create_expense(response)
-
-        if isinstance(response, CreateIncomingResponse):
-            return await self._create_income(response)
+        if isinstance(response, CreateTransactionResponse):
+            return await self._create_transactions(response)
 
         if isinstance(response, (ClarifyResponse, TextResponse)):
             return response.message
 
         raise RuntimeError(f"Unsupported AI response: {type(response).__name__}")
 
-    async def _create_expense(
+    async def _create_transactions(
         self,
-        response: CreateExpenseResponse,
+        response: CreateTransactionResponse,
     ) -> str:
-        transaction = await self._expense_service.create(
-            response.arguments,
-        )
+        messages: list[str] = []
 
-        return (
-            f"Добавлен расход «{transaction.name}» "
-            f"на сумму {transaction.amount} "
-            f"{response.arguments.currency_code}."
-        )
+        for item in response.transactions:
+            if isinstance(item, ExpenseTransactionItem):
+                expense = await self._expense_service.create(
+                    item.arguments,
+                )
 
-    async def _create_income(
-        self,
-        response: CreateIncomingResponse,
-    ) -> str:
-        transaction = await self._incoming_service.create(
-            response.arguments,
-        )
+                messages.append(
+                    f"Добавлен расход «{expense.name}» "
+                    f"на сумму {expense.amount} "
+                    f"{expense.currency.code}."
+                )
 
-        return (
-            f"Добавлен доход «{transaction.name}» "
-            f"на сумму {transaction.amount} "
-            f"{response.arguments.currency_code}."
-        )
+            elif isinstance(item, IncomingTransactionItem):
+                income = await self._incoming_service.create(
+                    item.arguments,
+                )
+
+                messages.append(
+                    f"Добавлен доход «{income.name}» "
+                    f"на сумму {income.amount} "
+                    f"{income.currency.code}."
+                )
+
+        return "\n".join(messages)
 
     async def _create_currency(
         self,

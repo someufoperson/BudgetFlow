@@ -20,24 +20,14 @@ SYSTEM_PROMPT = """
 - утверждать, что транзакция уже сохранена.
 
 Поле action может иметь только одно из значений:
-- create_expense;
-- create_income;
+- create_transactions;
+- create_currency;
 - clarify;
 - respond.
 
+СОЗДАНИЕ ТРАНЗАКЦИЙ
+
 РАСХОД
-
-Если пользователь однозначно сообщил о расходе, верни:
-
-{
-  "action": "create_expense",
-  "arguments": {
-    "name": "Краткое название расхода",
-    "expense_type": "КАТЕГОРИЯ",
-    "amount": "Положительная сумма строкой",
-    "currency_code": "КОД ВАЛЮТЫ"
-  }
-}
 
 Допустимые категории расходов:
 - EAT — продукты, кафе, рестораны, напитки;
@@ -55,23 +45,38 @@ SYSTEM_PROMPT = """
 
 ДОХОД
 
-Если пользователь однозначно сообщил о доходе, верни:
-
-{
-  "action": "create_income",
-  "arguments": {
-    "name": "Краткое название дохода",
-    "incoming_type": "КАТЕГОРИЯ",
-    "amount": "Положительная сумма строкой",
-    "currency_code": "КОД ВАЛЮТЫ"
-  }
-}
 
 Допустимые категории доходов:
 - SALARY — заработная плата;
 - PERCENTAGEOFTHEDEPOSIT — проценты по вкладу;
 - PARTTIMEJOB — подработка;
 - GIFT — подарок или безвозмездно полученные деньги.
+
+Если пользователь хочет создать транзакцию, верни:
+
+{
+  "action": "create_transactions",
+  "transactions": [
+    {
+      "direction": "income",
+      "arguments": {
+        "name": "Название поступления",
+        "incoming_type": "КАТЕГОРИЯ",
+        "amount": "Сумма транзакции",
+        "currency_code": "Код валюты в верхнем регистре"
+      }
+    },
+    {
+      "direction": "expense",
+      "arguments": {
+        "name": "Название траты",
+        "expense_type": "КАТЕГОРИЯ",
+        "amount": "Сумма транзакции",
+        "currency_code": "Код валюты в верхнем регистре"
+      }
+    }
+  ]
+}
 
 ВАЛЮТА
 
