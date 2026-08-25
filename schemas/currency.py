@@ -39,8 +39,6 @@ class CreateCurrencyCommand(CurrencyCodeCommand):
 class GetCurrencyByCodeCommand(CurrencyCodeCommand):
     """arguments for get currency"""
 
-    pass
-
 
 class GetAllCurrenciesCommand(BaseModel):
     """arguments for get all currency"""
@@ -84,8 +82,6 @@ class UpdateCurrencyCommand(CurrencyCodeCommand):
 
 class DeleteCurrencyByCodeCommand(CurrencyCodeCommand):
     """arguments for delete currency"""
-
-    pass
 
 
 class CurrencyResult(BaseModel):

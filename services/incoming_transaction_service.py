@@ -1,11 +1,13 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domain.enums import CategoryType
 from schemas.incoming_transaction import (
     CreateIncomingTransactionCommand,
     DeleteIncomingTransactionCommand,
-    IncomingTransactionResult,
     GetIncomingTransactionCommand,
+    IncomingTransactionResult,
 )
+from services.category_service import CategoryService
 from services.exceptions import (
     CurrencyNotFoundError,
     IncomingTransactionNotFoundError,
@@ -22,10 +24,12 @@ class IncomingTransactionService:
         session: AsyncSession,
         transaction_repository: IncomingTransactionRepository,
         currency_repository: CurrencyRepository,
+        category_service: CategoryService,
     ) -> None:
         self._session = session
         self._transactions = transaction_repository
         self._currencies = currency_repository
+        self._category_service = category_service
 
     async def create(
         self,
@@ -39,9 +43,14 @@ class IncomingTransactionService:
             if currency is None:
                 raise CurrencyNotFoundError(command.currency_code)
 
+            category = await self._category_service.require_direction(
+                command.category_id,
+                CategoryType.income,
+            )
+
             transaction = await self._transactions.create(
                 name=command.name,
-                incoming_type=command.incoming_type,
+                category_id=category.id,
                 amount=command.amount,
                 currency=currency,
             )
@@ -66,7 +75,7 @@ class IncomingTransactionService:
                 currency_code = currency.code
 
             transactions = await self._transactions.select(
-                incoming_type=command.incoming_type,
+                category_id=command.category_id,
                 currency_code=currency_code,
                 date_from=command.date_from,
                 date_to=command.date_to,

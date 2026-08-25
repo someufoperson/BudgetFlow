@@ -16,7 +16,7 @@ engine = create_async_engine(
 @event.listens_for(engine.sync_engine, "connect")
 def enable_sqlite_foreign_keys(
     dbapi_connection: DBAPIConnection,
-    _connection_record: ConnectionPoolEntry,  # noqa: ARG001
+    _connection_record: ConnectionPoolEntry,
 ) -> None:
     cursor = dbapi_connection.cursor()
 

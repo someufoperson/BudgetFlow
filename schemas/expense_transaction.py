@@ -4,7 +4,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from domain.enums import ExpenseType
+from schemas.category import CategoryDetails
 from schemas.currency import CurrencyDetails
 
 
@@ -17,7 +17,7 @@ class CreateExpenseTransactionCommand(BaseModel):
     )
 
     name: str = Field(min_length=1, max_length=128)
-    expense_type: ExpenseType
+    category_id: int = Field(gt=0)
     amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
     currency_code: str = Field(
         min_length=2,
@@ -47,7 +47,7 @@ class GetExpenseTransactionCommand(BaseModel):
         str_strip_whitespace=True,
     )
 
-    expense_type: ExpenseType | None = None
+    category_id: int | None = Field(default=None, gt=0)
     currency_code: str | None = Field(
         default=None,
         min_length=2,
@@ -81,7 +81,7 @@ class ExpenseTransactionResult(BaseModel):
 
     id: int
     name: str
-    expense_type: ExpenseType
+    category: CategoryDetails
     amount: Decimal
     currency: CurrencyDetails
     created_at: datetime

@@ -4,6 +4,7 @@ from ai.client import AIClient
 from ai.models import (
     AIResponseType,
     ClarifyResponse,
+    CreateCategoryResponse,
     CreateCurrencyResponse,
     CreateTransactionResponse,
     ExpenseTransactionItem,
@@ -11,7 +12,9 @@ from ai.models import (
     TextResponse,
     ai_response_adapter,
 )
-from ai.prompts import SYSTEM_PROMPT
+from ai.prompts import build_system_prompt
+from schemas.category import GetAllCategoriesCommand
+from services.category_service import CategoryService
 from services.currency_service import CurrencyService
 from services.expense_transaction_service import ExpenseTransactionService
 from services.incoming_transaction_service import IncomingTransactionService
@@ -24,19 +27,24 @@ class Assistant:
         currency_service: CurrencyService,
         expense_service: ExpenseTransactionService,
         incoming_service: IncomingTransactionService,
+        category_service: CategoryService,
     ) -> None:
         self._client = client
         self._currency_service = currency_service
         self._expense_service = expense_service
         self._incoming_service = incoming_service
+        self._category_service = category_service
 
     async def interpret(
         self,
         user_message: str,
     ) -> AIResponseType:
+        categories = await self._category_service.get_all(
+            GetAllCategoriesCommand(),
+        )
         raw_response = await asyncio.to_thread(
             self._client.complete,
-            SYSTEM_PROMPT,
+            build_system_prompt(categories),
             user_message,
         )
 
@@ -51,6 +59,9 @@ class Assistant:
         if isinstance(response, CreateCurrencyResponse):
             return await self._create_currency(response)
 
+        if isinstance(response, CreateCategoryResponse):
+            return await self._create_category(response)
+
         if isinstance(response, CreateTransactionResponse):
             return await self._create_transactions(response)
 
@@ -58,6 +69,16 @@ class Assistant:
             return response.message
 
         raise RuntimeError(f"Unsupported AI response: {type(response).__name__}")
+
+    async def _create_category(
+        self,
+        response: CreateCategoryResponse,
+    ) -> str:
+        category = await self._category_service.create(response.arguments)
+        return (
+            f"Добавлена категория «{category.name}» "
+            f"направления {category.direction.value}."
+        )
 
     async def _create_transactions(
         self,

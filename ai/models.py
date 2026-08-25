@@ -2,6 +2,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from schemas.category import CreateCategoryCommand
 from schemas.currency import CreateCurrencyCommand
 from schemas.expense_transaction import CreateExpenseTransactionCommand
 from schemas.incoming_transaction import CreateIncomingTransactionCommand
@@ -14,6 +15,11 @@ class AIResponse(BaseModel):
 class CreateCurrencyResponse(AIResponse):
     action: Literal["create_currency"]
     arguments: CreateCurrencyCommand
+
+
+class CreateCategoryResponse(AIResponse):
+    action: Literal["create_category"]
+    arguments: CreateCategoryCommand
 
 
 class ExpenseTransactionItem(AIResponse):
@@ -52,7 +58,11 @@ class TextResponse(AIResponse):
 
 
 AIResponseType = Annotated[
-    CreateCurrencyResponse | CreateTransactionResponse | ClarifyResponse | TextResponse,
+    CreateCurrencyResponse
+    | CreateCategoryResponse
+    | CreateTransactionResponse
+    | ClarifyResponse
+    | TextResponse,
     Field(discriminator="action"),
 ]
 

@@ -1,17 +1,17 @@
 import asyncio
 from logging.config import fileConfig
 
+from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from alembic import context
+import storage.models.category
+import storage.models.currency
+import storage.models.expense_transaction
+import storage.models.incoming_transaction  # noqa: F401
 from settings import settings
 from storage.models.base import Base
-
-import storage.models.currency  # noqa: F401
-import storage.models.expense_transaction  # noqa: F401
-import storage.models.incoming_transaction  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

@@ -5,12 +5,14 @@ from requests import RequestException
 
 from ai.assistant import Assistant
 from ai.client import AIClient
+from services.category_service import CategoryService
 from services.currency_service import CurrencyService
 from services.exceptions import ServiceError
 from services.expense_transaction_service import ExpenseTransactionService
 from services.incoming_transaction_service import IncomingTransactionService
 from storage.db import async_session_factory, engine
 from storage.migrations import upgrade_database
+from storage.repositories.category_repository import CategoryRepository
 from storage.repositories.currency_repository import CurrencyRepository
 from storage.repositories.expense_transaction_repository import (
     ExpenseTransactionRepository,
@@ -25,22 +27,30 @@ async def run_console() -> None:
 
     async with async_session_factory() as session:
         currency_repository = CurrencyRepository(session)
+        category_repository = CategoryRepository(session)
 
         currency_service = CurrencyService(
             session=session,
             currency_repository=currency_repository,
         )
 
+        category_service = CategoryService(
+            session=session,
+            category_repository=category_repository,
+        )
+
         expense_service = ExpenseTransactionService(
             session=session,
             transaction_repository=ExpenseTransactionRepository(session),
             currency_repository=currency_repository,
+            category_service=category_service,
         )
 
         incoming_service = IncomingTransactionService(
             session=session,
             transaction_repository=IncomingTransactionRepository(session),
             currency_repository=currency_repository,
+            category_service=category_service,
         )
 
         assistant = Assistant(
@@ -48,6 +58,7 @@ async def run_console() -> None:
             currency_service=currency_service,
             expense_service=expense_service,
             incoming_service=incoming_service,
+            category_service=category_service,
         )
 
         print("BudgetFlow запущен.")
