@@ -1,6 +1,7 @@
 from sqlalchemy import Enum, String, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
+from domain.category import normalize_category_name
 from domain.enums import CategoryType
 from storage.models.abstract import AbstractModel
 
@@ -27,3 +28,7 @@ class Category(AbstractModel):
         String(length=512),
         nullable=True,
     )
+
+    @validates("name")
+    def normalize_name(self, _key: str, name: str) -> str:
+        return normalize_category_name(name)

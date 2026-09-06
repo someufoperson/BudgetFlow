@@ -5,11 +5,13 @@ from requests import RequestException
 
 from ai.assistant import Assistant
 from ai.client import AIClient
+from ai.memory import ConversationMemory
 from services.category_service import CategoryService
 from services.currency_service import CurrencyService
 from services.exceptions import ServiceError
 from services.expense_transaction_service import ExpenseTransactionService
 from services.incoming_transaction_service import IncomingTransactionService
+from settings import settings
 from storage.db import async_session_factory, engine
 from storage.migrations import upgrade_database
 from storage.repositories.category_repository import CategoryRepository
@@ -24,6 +26,7 @@ from storage.repositories.incoming_transaction_repository import (
 
 async def run_console() -> None:
     ai_client = AIClient()
+    conversation_memory = ConversationMemory(settings.context_max_pairs)
 
     async with async_session_factory() as session:
         currency_repository = CurrencyRepository(session)
@@ -59,6 +62,7 @@ async def run_console() -> None:
             expense_service=expense_service,
             incoming_service=incoming_service,
             category_service=category_service,
+            memory=conversation_memory,
         )
 
         print("BudgetFlow запущен.")

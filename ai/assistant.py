@@ -1,6 +1,9 @@
 import asyncio
 
+from pydantic import ValidationError
+
 from ai.client import AIClient
+from ai.memory import ConversationMemory
 from ai.models import (
     AIResponseType,
     ClarifyResponse,
@@ -10,10 +13,12 @@ from ai.models import (
     ExpenseTransactionItem,
     IncomingTransactionItem,
     TextResponse,
+    UpdateCategoryResponse,
     ai_response_adapter,
 )
 from ai.prompts import build_system_prompt
-from schemas.category import GetAllCategoriesCommand
+from domain.enums import CategoryType
+from schemas.category import GetAllCategoriesCommand, UpdateCategoryCommand
 from services.category_service import CategoryService
 from services.currency_service import CurrencyService
 from services.expense_transaction_service import ExpenseTransactionService
@@ -28,12 +33,14 @@ class Assistant:
         expense_service: ExpenseTransactionService,
         incoming_service: IncomingTransactionService,
         category_service: CategoryService,
+        memory: ConversationMemory | None = None,
     ) -> None:
         self._client = client
         self._currency_service = currency_service
         self._expense_service = expense_service
         self._incoming_service = incoming_service
         self._category_service = category_service
+        self._memory = memory
 
     async def interpret(
         self,
@@ -42,13 +49,27 @@ class Assistant:
         categories = await self._category_service.get_all(
             GetAllCategoriesCommand(),
         )
-        raw_response = await asyncio.to_thread(
-            self._client.complete,
-            build_system_prompt(categories),
-            user_message,
-        )
+        system_prompt = build_system_prompt(categories)
 
-        return ai_response_adapter.validate_json(raw_response)
+        if self._memory is None:
+            raw_response = await asyncio.to_thread(
+                self._client.complete,
+                system_prompt,
+                user_message,
+            )
+        else:
+            raw_response = await asyncio.to_thread(
+                self._client.complete,
+                system_prompt,
+                user_message,
+                self._memory.messages(),
+            )
+
+        try:
+            return ai_response_adapter.validate_json(raw_response)
+        except ValidationError:
+            print(f"Некорректный ответ AI: {raw_response!r}", flush=True)
+            raise
 
     async def handle_message(
         self,
@@ -57,28 +78,65 @@ class Assistant:
         response = await self.interpret(user_message)
 
         if isinstance(response, CreateCurrencyResponse):
-            return await self._create_currency(response)
+            answer = await self._create_currency(response)
+        elif isinstance(response, CreateCategoryResponse):
+            answer = await self._create_category(response)
+        elif isinstance(response, UpdateCategoryResponse):
+            answer = await self._update_category(response)
+        elif isinstance(response, CreateTransactionResponse):
+            answer = await self._create_transactions(response)
+        elif isinstance(response, (ClarifyResponse, TextResponse)):
+            answer = response.message
+        else:
+            raise TypeError(f"Unsupported AI response: {type(response).__name__}")
 
-        if isinstance(response, CreateCategoryResponse):
-            return await self._create_category(response)
+        if self._memory is not None:
+            self._memory.add(user_message, response.model_dump_json())
 
-        if isinstance(response, CreateTransactionResponse):
-            return await self._create_transactions(response)
-
-        if isinstance(response, (ClarifyResponse, TextResponse)):
-            return response.message
-
-        raise RuntimeError(f"Unsupported AI response: {type(response).__name__}")
+        return answer
 
     async def _create_category(
         self,
         response: CreateCategoryResponse,
     ) -> str:
         category = await self._category_service.create(response.arguments)
+        direction_name = {
+            CategoryType.income: "Доходы",
+            CategoryType.expense: "Расходы",
+        }[category.direction]
         return (
-            f"Добавлена категория «{category.name}» "
-            f"направления {category.direction.value}."
+            f"Добавлена категория «{category.name}» для направления «{direction_name}»."
         )
+
+    async def _update_category(
+        self,
+        response: UpdateCategoryResponse,
+    ) -> str:
+        arguments = response.arguments
+
+        if arguments.name is not None and "description" in arguments.model_fields_set:
+            command = UpdateCategoryCommand(
+                id=arguments.id,
+                name=arguments.name,
+                description=arguments.description,
+            )
+        elif arguments.name is not None:
+            command = UpdateCategoryCommand(id=arguments.id, name=arguments.name)
+        else:
+            command = UpdateCategoryCommand(
+                id=arguments.id,
+                description=arguments.description,
+            )
+
+        category = await self._category_service.update(command)
+
+        if (
+            "description" in arguments.model_fields_set
+            and arguments.description is None
+        ):
+            return f"Категория «{category.name}» обновлена, описание удалено."
+
+        return f"Категория «{category.name}» обновлена."
 
     async def _create_transactions(
         self,

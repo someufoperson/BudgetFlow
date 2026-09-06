@@ -3,6 +3,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from domain.category import normalize_category_name
 from domain.enums import CategoryType
 
 
@@ -27,7 +28,7 @@ class CategoryNameCommand(BaseModel):
     @field_validator("name")
     @classmethod
     def normalize_name(cls, value: str) -> str:
-        normalized = " ".join(value.split())
+        normalized = normalize_category_name(value)
 
         if not normalized:
             raise ValueError("Category name cannot be empty")
@@ -87,7 +88,7 @@ class UpdateCategoryCommand(CategoryIdCommand):
         if value is None:
             return None
 
-        normalized = " ".join(value.split())
+        normalized = normalize_category_name(value)
 
         if not normalized:
             raise ValueError("Category name cannot be empty")

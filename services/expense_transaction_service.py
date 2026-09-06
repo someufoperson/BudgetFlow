@@ -12,6 +12,8 @@ from services.exceptions import (
     CurrencyNotFoundError,
     ExpenseTransactionNotFoundError,
 )
+from services.transaction_time import occurred_at_bounds, resolve_occurred_at
+from settings import settings
 from storage.repositories.currency_repository import CurrencyRepository
 from storage.repositories.expense_transaction_repository import (
     ExpenseTransactionRepository,
@@ -53,6 +55,7 @@ class ExpenseTransactionService:
                 category_id=category.id,
                 amount=command.amount,
                 currency=currency,
+                occurred_at=resolve_occurred_at(command.occurred_at),
             )
 
         return ExpenseTransactionResult.model_validate(transaction)
@@ -74,11 +77,16 @@ class ExpenseTransactionService:
 
                 currency_code = currency.code
 
+            occurred_from, occurred_to = occurred_at_bounds(
+                command.date_from,
+                command.date_to,
+                settings.timezone_info,
+            )
             transactions = await self._transactions.select(
                 category_id=command.category_id,
                 currency_code=currency_code,
-                date_from=command.date_from,
-                date_to=command.date_to,
+                occurred_from=occurred_from,
+                occurred_to=occurred_to,
             )
 
         return [

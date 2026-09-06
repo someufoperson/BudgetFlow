@@ -1,4 +1,4 @@
-from datetime import date, datetime, time, timedelta
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import delete, select
@@ -19,12 +19,14 @@ class ExpenseTransactionRepository:
         category_id: int,
         amount: Decimal,
         currency: Currency,
+        occurred_at: datetime,
     ) -> ExpenseTransaction:
         expense_transaction = ExpenseTransaction(
             name=name,
             category_id=category_id,
             amount=amount,
             currency=currency,
+            occurred_at=occurred_at,
         )
         self._session.add(expense_transaction)
         await self._session.flush()
@@ -44,12 +46,9 @@ class ExpenseTransactionRepository:
         *,
         category_id: int | None = None,
         currency_code: str | None = None,
-        date_from: date | None = None,
-        date_to: date | None = None,
+        occurred_from: datetime | None = None,
+        occurred_to: datetime | None = None,
     ) -> list[ExpenseTransaction]:
-        if date_from is not None and date_to is not None and date_from > date_to:
-            raise ValueError("date_from cannot be later than date_to")
-
         stmt = select(ExpenseTransaction).options(
             selectinload(ExpenseTransaction.currency),
             selectinload(ExpenseTransaction.category),
@@ -63,20 +62,16 @@ class ExpenseTransactionRepository:
                 ExpenseTransaction.currency_code == currency_code,
             )
 
-        if date_from is not None:
-            start_datetime = datetime.combine(date_from, time.min)
-            stmt = stmt.where(ExpenseTransaction.created_at >= start_datetime)
+        if occurred_from is not None:
+            stmt = stmt.where(ExpenseTransaction.occurred_at >= occurred_from)
 
-        if date_to is not None:
-            end_datetime = datetime.combine(
-                date_to + timedelta(days=1),
-                time.min,
-            )
-            stmt = stmt.where(
-                ExpenseTransaction.created_at < end_datetime,
-            )
+        if occurred_to is not None:
+            stmt = stmt.where(ExpenseTransaction.occurred_at < occurred_to)
 
-        stmt = stmt.order_by(ExpenseTransaction.created_at.desc())
+        stmt = stmt.order_by(
+            ExpenseTransaction.occurred_at.desc(),
+            ExpenseTransaction.id.desc(),
+        )
 
         result = await self._session.scalars(stmt)
         return list(result.all())

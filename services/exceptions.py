@@ -1,3 +1,6 @@
+from datetime import datetime
+
+
 class ServiceError(Exception):
     """Base error service layer"""
 
@@ -63,3 +66,9 @@ class CategoryDirectionChangeInUseError(ServiceError):
             "is used by transactions"
         )
         self.category_id = category_id
+
+
+class FutureTransactionDateError(ServiceError):
+    def __init__(self, occurred_at: datetime) -> None:
+        super().__init__("Transaction date cannot be in the future")
+        self.occurred_at = occurred_at

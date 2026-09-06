@@ -4,6 +4,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from domain.transaction_time import normalize_occurred_at, occurred_at_from_storage
 from schemas.category import CategoryDetails
 from schemas.currency import CurrencyDetails
 
@@ -19,6 +20,7 @@ class CreateExpenseTransactionCommand(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     category_id: int = Field(gt=0)
     amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    occurred_at: datetime | None = None
     currency_code: str = Field(
         min_length=2,
         max_length=16,
@@ -29,6 +31,11 @@ class CreateExpenseTransactionCommand(BaseModel):
     @classmethod
     def normalize_currency_code(cls, value: str) -> str:
         return value.upper()
+
+    @field_validator("occurred_at")
+    @classmethod
+    def normalize_transaction_time(cls, value: datetime | None) -> datetime | None:
+        return normalize_occurred_at(value) if value is not None else None
 
 
 class DeleteExpenseTransactionCommand(BaseModel):
@@ -84,5 +91,11 @@ class ExpenseTransactionResult(BaseModel):
     category: CategoryDetails
     amount: Decimal
     currency: CurrencyDetails
+    occurred_at: datetime
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("occurred_at", mode="before")
+    @classmethod
+    def restore_transaction_timezone(cls, value: datetime) -> datetime:
+        return occurred_at_from_storage(value)

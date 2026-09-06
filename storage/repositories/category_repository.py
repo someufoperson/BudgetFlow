@@ -3,6 +3,7 @@ from typing import TypedDict
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domain.category import normalize_category_name
 from domain.enums import CategoryType
 from storage.models.category import Category
 from storage.models.expense_transaction import ExpenseTransaction
@@ -46,7 +47,7 @@ class CategoryRepository:
     ) -> Category | None:
         result = await self._session.scalars(
             select(Category).where(
-                Category.name == name,
+                Category.name == normalize_category_name(name),
                 Category.direction == direction,
             ),
         )

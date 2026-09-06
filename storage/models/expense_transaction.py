@@ -1,6 +1,7 @@
+from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DECIMAL, CheckConstraint, ForeignKey, String
+from sqlalchemy import DECIMAL, CheckConstraint, DateTime, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from storage.models.abstract import AbstractModel
@@ -18,6 +19,12 @@ class ExpenseTransaction(AbstractModel):
         nullable=False,
     )
     amount: Mapped[Decimal] = mapped_column(DECIMAL(18, 2), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+    )
     currency_code: Mapped[str] = mapped_column(
         String(16),
         ForeignKey(

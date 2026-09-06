@@ -15,11 +15,29 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "maxapi-python>=2.4.0",
     "mypy>=2.3.0",
     "pre-commit>=4.6.0",
+    "pydub>=0.25.1",
     "pytest>=9.1.1",
     "ruff>=0.15.21",
+    "speechrecognition>=3.17.0",
 ]
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["speech_recognition", "speech_recognition.*", "pydub", "pydub.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["pymax", "pymax.*"]
+follow_imports = "skip"
+
+[tool.ruff.lint.per-file-ignores]
+"storage/alembic/versions/c351ef005e00_initial_schema.py" = [
+    "I001",
+    "UP007",
+    "UP035",
+]
