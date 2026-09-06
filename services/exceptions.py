@@ -5,6 +5,13 @@ class ServiceError(Exception):
     """Base error service layer"""
 
 
+class TransactionChangedError(ServiceError):
+    def __init__(self) -> None:
+        super().__init__(
+            "Операция изменилась после выбора. Найдите её заново и повторите правку."
+        )
+
+
 class CurrencyNotFoundError(ServiceError):
     def __init__(self, code: str) -> None:
         super().__init__(f"Currency {code} not found")

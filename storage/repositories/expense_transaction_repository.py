@@ -1,12 +1,16 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from storage.models.currency import Currency
 from storage.models.expense_transaction import ExpenseTransaction
+from storage.repositories.transaction_repository import (
+    TransactionUpdates,
+    matches_transaction_name,
+)
 
 
 class ExpenseTransactionRepository:
@@ -33,17 +37,23 @@ class ExpenseTransactionRepository:
         await self._session.refresh(expense_transaction, attribute_names=["category"])
         return expense_transaction
 
-    async def delete(self, id: int) -> bool:
+    async def delete(self, id: int, expected: TransactionUpdates | None = None) -> bool:
+        stmt = delete(ExpenseTransaction).where(ExpenseTransaction.id == id)
+        if expected is not None:
+            for field, value in expected.items():
+                stmt = stmt.where(getattr(ExpenseTransaction, field) == value)
         result = await self._session.execute(
-            delete(ExpenseTransaction)
-            .where(ExpenseTransaction.id == id)
-            .returning(ExpenseTransaction.id),
+            stmt.returning(ExpenseTransaction.id),
         )
         return result.scalar_one_or_none() is not None
 
     async def select(
         self,
         *,
+        name: str | None = None,
+        amount: Decimal | None = None,
+        amount_from: Decimal | None = None,
+        amount_to: Decimal | None = None,
         category_id: int | None = None,
         currency_code: str | None = None,
         occurred_from: datetime | None = None,
@@ -53,6 +63,13 @@ class ExpenseTransactionRepository:
             selectinload(ExpenseTransaction.currency),
             selectinload(ExpenseTransaction.category),
         )
+
+        if amount is not None:
+            stmt = stmt.where(ExpenseTransaction.amount == amount)
+        if amount_from is not None:
+            stmt = stmt.where(ExpenseTransaction.amount >= amount_from)
+        if amount_to is not None:
+            stmt = stmt.where(ExpenseTransaction.amount <= amount_to)
 
         if category_id is not None:
             stmt = stmt.where(ExpenseTransaction.category_id == category_id)
@@ -74,4 +91,34 @@ class ExpenseTransactionRepository:
         )
 
         result = await self._session.scalars(stmt)
-        return list(result.all())
+        return [
+            transaction
+            for transaction in result.all()
+            if matches_transaction_name(transaction.name, name)
+        ]
+
+    async def get_by_id(self, id: int) -> ExpenseTransaction | None:
+        return await self._session.scalar(
+            select(ExpenseTransaction)
+            .where(ExpenseTransaction.id == id)
+            .options(
+                selectinload(ExpenseTransaction.currency),
+                selectinload(ExpenseTransaction.category),
+            )
+            .execution_options(populate_existing=True)
+        )
+
+    async def update(
+        self, id: int, updates: TransactionUpdates, expected: TransactionUpdates
+    ) -> ExpenseTransaction | None:
+        stmt = update(ExpenseTransaction).where(ExpenseTransaction.id == id)
+        for field, value in expected.items():
+            stmt = stmt.where(getattr(ExpenseTransaction, field) == value)
+        result = await self._session.execute(
+            stmt.values(**updates)
+            .returning(ExpenseTransaction.id)
+            .execution_options(synchronize_session=False)
+        )
+        if result.scalar_one_or_none() is None:
+            return None
+        return await self.get_by_id(id)

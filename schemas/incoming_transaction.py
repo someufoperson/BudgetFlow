@@ -1,12 +1,16 @@
-from datetime import date, datetime
+from datetime import datetime
 from decimal import Decimal
-from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from domain.transaction_time import normalize_occurred_at, occurred_at_from_storage
 from schemas.category import CategoryDetails
 from schemas.currency import CurrencyDetails
+from schemas.transaction import (
+    TransactionFilters,
+    TransactionSnapshot,
+    UpdateTransactionCommand,
+)
 
 
 class CreateIncomingTransactionCommand(BaseModel):
@@ -44,41 +48,15 @@ class DeleteIncomingTransactionCommand(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: int = Field(gt=0)
+    expected: TransactionSnapshot | None = None
 
 
-class GetIncomingTransactionCommand(BaseModel):
-    """arguments for filtering incoming transaction"""
+class GetIncomingTransactionCommand(TransactionFilters):
+    pass
 
-    model_config = ConfigDict(
-        extra="forbid",
-        str_strip_whitespace=True,
-    )
 
-    category_id: int | None = Field(default=None, gt=0)
-    currency_code: str | None = Field(
-        default=None,
-        min_length=2,
-        max_length=16,
-        pattern=r"^[A-Za-z0-9]+$",
-    )
-    date_from: date | None = None
-    date_to: date | None = None
-
-    @field_validator("currency_code")
-    @classmethod
-    def normalize_currency_code(cls, value: str | None) -> str | None:
-        return value.upper() if value is not None else None
-
-    @model_validator(mode="after")
-    def validate_date_range(self) -> Self:
-        if (
-            self.date_from is not None
-            and self.date_to is not None
-            and self.date_from > self.date_to
-        ):
-            raise ValueError("date_from cannot be later than date_to")
-
-        return self
+class UpdateIncomingTransactionCommand(UpdateTransactionCommand):
+    pass
 
 
 class IncomingTransactionResult(BaseModel):

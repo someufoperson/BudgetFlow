@@ -4,6 +4,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     TypeAdapter,
     field_validator,
     model_validator,
@@ -13,6 +14,7 @@ from schemas.category import CreateCategoryCommand, UpdateCategoryCommand
 from schemas.currency import CreateCurrencyCommand
 from schemas.expense_transaction import CreateExpenseTransactionCommand
 from schemas.incoming_transaction import CreateIncomingTransactionCommand
+from schemas.transaction import TransactionChanges, TransactionFilters
 
 
 class AIResponse(BaseModel):
@@ -89,9 +91,86 @@ class ClarifyResponse(AIResponse):
     message: str = Field(min_length=1)
 
 
+class SearchTransactionArguments(TransactionFilters):
+    direction: Literal["expense", "income"] | None = None
+
+
+class SearchTransactionsResponse(AIResponse):
+    action: Literal["search_transactions"]
+    filters: SearchTransactionArguments
+    limit: int = Field(default=10, ge=1, le=10, strict=True)
+
+    @field_validator("limit", mode="before")
+    @classmethod
+    def normalize_limit(cls, value: JsonValue) -> JsonValue:
+        return 10 if value is None else value
+
+
+class MoreTransactionsResponse(AIResponse):
+    action: Literal["more_transactions"]
+    limit: int | None = Field(default=None, ge=1, le=10, strict=True)
+
+
+class SelectTransactionResponse(AIResponse):
+    action: Literal["select_transaction"]
+    selection: int = Field(gt=0)
+    apply_changes: bool = False
+
+
+class UpdateTransactionResponse(AIResponse):
+    action: Literal["update_transaction"]
+    filters: SearchTransactionArguments | None = None
+    selection: int | None = Field(default=None, gt=0)
+    changes: TransactionChanges
+
+    @field_validator("changes", mode="before")
+    @classmethod
+    def omit_null_changes(
+        cls, value: JsonValue | TransactionChanges
+    ) -> JsonValue | TransactionChanges:
+        if isinstance(value, dict):
+            return {
+                name: change
+                for name, change in value.items()
+                if change is not None or name not in TransactionChanges.model_fields
+            }
+        return value
+
+    @model_validator(mode="after")
+    def validate_target(self) -> Self:
+        if (self.filters is None) == (self.selection is None):
+            raise ValueError("Specify either search filters or a displayed selection")
+        if self.filters is not None and not any(
+            value is not None for value in self.filters.model_dump().values()
+        ):
+            raise ValueError("Specify at least one search condition for an update")
+        return self
+
+
 class TextResponse(AIResponse):
     action: Literal["respond"]
     message: str = Field(min_length=1)
+
+
+class DeleteTransactionResponse(AIResponse):
+    action: Literal["delete_transaction"]
+    filters: SearchTransactionArguments | None = None
+    selection: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_target(self) -> Self:
+        if (self.filters is None) == (self.selection is None):
+            raise ValueError("Specify either search filters or a displayed selection")
+        if self.filters is not None and not any(
+            value is not None for value in self.filters.model_dump().values()
+        ):
+            raise ValueError("Specify at least one search condition for deletion")
+        return self
+
+
+class ConfirmDeleteTransactionResponse(AIResponse):
+    action: Literal["confirm_delete_transaction"]
+    confirmed: bool = Field(strict=True)
 
 
 AIResponseType = Annotated[
@@ -99,6 +178,12 @@ AIResponseType = Annotated[
     | CreateCategoryResponse
     | UpdateCategoryResponse
     | CreateTransactionResponse
+    | SearchTransactionsResponse
+    | MoreTransactionsResponse
+    | SelectTransactionResponse
+    | UpdateTransactionResponse
+    | DeleteTransactionResponse
+    | ConfirmDeleteTransactionResponse
     | ClarifyResponse
     | TextResponse,
     Field(discriminator="action"),

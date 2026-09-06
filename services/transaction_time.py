@@ -1,6 +1,7 @@
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 
 from domain.transaction_time import normalize_occurred_at, occurred_at_to_storage
+from schemas.transaction import TransactionChanges
 from services.exceptions import FutureTransactionDateError
 
 
@@ -15,6 +16,20 @@ def resolve_occurred_at(value: datetime | None) -> datetime:
         raise FutureTransactionDateError(occurred_at)
 
     return occurred_at_to_storage(occurred_at)
+
+
+def resolve_updated_occurred_at(
+    current: datetime, changes: TransactionChanges, timezone: tzinfo
+) -> datetime:
+    if changes.occurred_at is not None:
+        return resolve_occurred_at(changes.occurred_at)
+    local = normalize_occurred_at(current).astimezone(timezone)
+    updated = datetime.combine(
+        changes.occurred_date or local.date(),
+        changes.occurred_time or local.time(),
+        tzinfo=timezone,
+    )
+    return resolve_occurred_at(updated)
 
 
 def occurred_at_bounds(
