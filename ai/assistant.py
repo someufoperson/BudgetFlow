@@ -169,9 +169,7 @@ class Assistant:
             CategoryType.income: "Доходы",
             CategoryType.expense: "Расходы",
         }[category.direction]
-        return (
-            f"Добавлена категория «{category.name}» для направления «{direction_name}»."
-        )
+        return f"✅ Добавлена категория «{category.name}» для направления «{direction_name}»."
 
     async def _update_category(
         self,
@@ -199,9 +197,9 @@ class Assistant:
             "description" in arguments.model_fields_set
             and arguments.description is None
         ):
-            return f"Категория «{category.name}» обновлена, описание удалено."
+            return f"✏️ Категория «{category.name}» обновлена, описание удалено."
 
-        return f"Категория «{category.name}» обновлена."
+        return f"✏️ Категория «{category.name}» обновлена."
 
     async def _create_transactions(
         self,
@@ -221,7 +219,7 @@ class Assistant:
                 self._transactions.shown_count += 1
 
                 messages.append(
-                    f"Добавлен расход «{expense.name}» "
+                    f"🔴 Добавлен расход «{expense.name}» "
                     f"на сумму {expense.amount} "
                     f"{expense.currency.code}."
                 )
@@ -234,7 +232,7 @@ class Assistant:
                 self._transactions.shown_count += 1
 
                 messages.append(
-                    f"Добавлен доход «{income.name}» "
+                    f"🟢 Добавлен доход «{income.name}» "
                     f"на сумму {income.amount} "
                     f"{income.currency.code}."
                 )
@@ -270,7 +268,9 @@ class Assistant:
     @staticmethod
     def _format_transaction(transaction: TransactionResult) -> str:
         direction = (
-            "Расход" if isinstance(transaction, ExpenseTransactionResult) else "Доход"
+            "🔴 Расход"
+            if isinstance(transaction, ExpenseTransactionResult)
+            else "🟢 Доход"
         )
         local = transaction.occurred_at.astimezone(settings.timezone_info)
         return (
@@ -316,7 +316,7 @@ class Assistant:
         self._transactions.shown_count = min(
             start + self._transactions.page_size, len(self._transactions.results)
         )
-        lines = [f"Найдено транзакций: {len(self._transactions.results)}."]
+        lines = [f"🔎 Найдено транзакций: {len(self._transactions.results)}."]
         lines.extend(
             f"{index + 1}. {self._format_transaction(self._transactions.results[index])}"
             for index in range(start, self._transactions.shown_count)
@@ -355,7 +355,7 @@ class Assistant:
         current = self._transactions.results[selection - 1]
         self._transactions.pending_delete = current
         return (
-            f"Удалить эту транзакцию?\n{self._format_transaction(current)}\n"
+            f"⚠️ Удалить эту транзакцию?\n{self._format_transaction(current)}\n"
             "Восстановление не предусмотрено. Ответьте «да, удалить» или «отмена»."
         )
 
@@ -386,7 +386,7 @@ class Assistant:
             )
         self._transactions.clear()
         return (
-            f"Транзакция удалена: {self._format_transaction(current)}.\n"
+            f"🗑️ Транзакция удалена: {self._format_transaction(current)}.\n"
             "Для дальнейшей работы со списком выполните поиск заново."
         )
 
@@ -442,7 +442,7 @@ class Assistant:
         if current == updated:
             return "Изменений нет. " + self._format_transaction(updated)
         return (
-            "Транзакция изменена.\n"
+            "✏️ Транзакция изменена.\n"
             f"Было: {self._format_transaction(current)}\n"
             f"Стало: {self._format_transaction(updated)}"
         )
@@ -456,6 +456,6 @@ class Assistant:
         )
 
         return (
-            f"Добавлена валюта «{currency.name}» "
+            f"✅ Добавлена валюта «{currency.name}» "
             f"с кодом {currency.code} и типом {currency.currency_type.value}."
         )

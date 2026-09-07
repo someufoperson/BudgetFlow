@@ -65,18 +65,18 @@ async def run_console() -> None:
             memory=conversation_memory,
         )
 
-        print("BudgetFlow запущен.")
+        print("💰 BudgetFlow запущен.")
         print("Для выхода введите exit.")
 
         while True:
             try:
                 user_message = input("\nВы: ").strip()
             except (EOFError, KeyboardInterrupt):
-                print("\nЗаврешение работы")
+                print("\n👋 Завершение работы")
                 break
 
             if user_message.lower() in {"exit", "quit"}:
-                print("Завершение работы")
+                print("👋 Завершение работы")
                 break
 
             if not user_message:
@@ -87,11 +87,11 @@ async def run_console() -> None:
                     user_message,
                 )
             except ValidationError:
-                answer = "AI вернул некорректный JSON"
+                answer = "⚠️ AI вернул некорректный JSON"
             except RequestException as error:
-                answer = f"Ошибка обращения к AI: {error}"
+                answer = f"⚠️ Ошибка обращения к AI: {error}"
             except ServiceError as error:
-                answer = str(error)
+                answer = f"⚠️ {error}"
 
             print(f"BudgetFlow: {answer}")
 
