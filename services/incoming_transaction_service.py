@@ -10,6 +10,7 @@ from schemas.incoming_transaction import (
     UpdateIncomingTransactionCommand,
 )
 from schemas.transaction import TransactionSnapshot
+from services.account_service import AccountService
 from services.category_service import CategoryService
 from services.exceptions import (
     CurrencyNotFoundError,
@@ -36,11 +37,13 @@ class IncomingTransactionService:
         transaction_repository: IncomingTransactionRepository,
         currency_repository: CurrencyRepository,
         category_service: CategoryService,
+        account_service: AccountService,
     ) -> None:
         self._session = session
         self._transactions = transaction_repository
         self._currencies = currency_repository
         self._category_service = category_service
+        self._account_service = account_service
 
     async def create(
         self,
@@ -59,7 +62,11 @@ class IncomingTransactionService:
                 CategoryType.income,
             )
 
+            account = await self._account_service.require_account(
+                command.account_id, command.currency_code
+            )
             transaction = await self._transactions.create(
+                account_id=account.id,
                 name=command.name,
                 category_id=category.id,
                 amount=command.amount,
@@ -92,6 +99,7 @@ class IncomingTransactionService:
                 settings.timezone_info,
             )
             transactions = await self._transactions.select(
+                account_id=command.account_id,
                 name=command.name,
                 amount=command.amount,
                 amount_from=command.amount_from,
@@ -119,6 +127,7 @@ class IncomingTransactionService:
                     raise IncomingTransactionNotFoundError(command.id)
                 snapshot = command.expected
                 expected = {
+                    "account_id": snapshot.account_id,
                     "name": snapshot.name,
                     "amount": snapshot.amount,
                     "category_id": snapshot.category_id,
@@ -140,6 +149,7 @@ class IncomingTransactionService:
                 raise IncomingTransactionNotFoundError(command.id)
             current = IncomingTransactionResult.model_validate(transaction)
             snapshot = TransactionSnapshot(
+                account_id=current.account_id,
                 name=current.name,
                 category_id=current.category.id,
                 amount=current.amount,
@@ -150,6 +160,11 @@ class IncomingTransactionService:
                 raise TransactionChangedError()
             changes = command.changes
             updates: TransactionUpdates = {}
+            if changes.account_id is not None:
+                account = await self._account_service.require_account(
+                    changes.account_id, changes.currency_code or current.currency.code
+                )
+                updates["account_id"] = account.id
             if changes.name is not None:
                 updates["name"] = changes.name
             if changes.amount is not None:
@@ -165,6 +180,10 @@ class IncomingTransactionService:
                 )
                 if currency is None:
                     raise CurrencyNotFoundError(changes.currency_code)
+                if current.account_id is not None and changes.account_id is None:
+                    await self._account_service.require_account(
+                        current.account_id, currency.code
+                    )
                 updates["currency_code"] = currency.code
             if (
                 changes.occurred_at is not None
@@ -175,6 +194,7 @@ class IncomingTransactionService:
                     current.occurred_at, changes, settings.timezone_info
                 )
             expected: TransactionUpdates = {
+                "account_id": snapshot.account_id,
                 "name": snapshot.name,
                 "amount": snapshot.amount,
                 "category_id": snapshot.category_id,

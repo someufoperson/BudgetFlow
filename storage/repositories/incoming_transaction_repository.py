@@ -24,8 +24,10 @@ class IncomingTransactionRepository:
         amount: Decimal,
         currency: Currency,
         occurred_at: datetime,
+        account_id: int | None = None,
     ) -> IncomingTransaction:
         incoming_transaction = IncomingTransaction(
+            account_id=account_id,
             name=name,
             category_id=category_id,
             amount=amount,
@@ -34,7 +36,9 @@ class IncomingTransactionRepository:
         )
         self._session.add(incoming_transaction)
         await self._session.flush()
-        await self._session.refresh(incoming_transaction, attribute_names=["category"])
+        await self._session.refresh(
+            incoming_transaction, attribute_names=["category", "account"]
+        )
         return incoming_transaction
 
     async def delete(self, id: int, expected: TransactionUpdates | None = None) -> bool:
@@ -50,6 +54,7 @@ class IncomingTransactionRepository:
     async def select(
         self,
         *,
+        account_id: int | None = None,
         name: str | None = None,
         amount: Decimal | None = None,
         amount_from: Decimal | None = None,
@@ -62,7 +67,11 @@ class IncomingTransactionRepository:
         stmt = select(IncomingTransaction).options(
             selectinload(IncomingTransaction.currency),
             selectinload(IncomingTransaction.category),
+            selectinload(IncomingTransaction.account),
         )
+
+        if account_id is not None:
+            stmt = stmt.where(IncomingTransaction.account_id == account_id)
 
         if amount is not None:
             stmt = stmt.where(IncomingTransaction.amount == amount)
@@ -104,6 +113,7 @@ class IncomingTransactionRepository:
             .options(
                 selectinload(IncomingTransaction.currency),
                 selectinload(IncomingTransaction.category),
+                selectinload(IncomingTransaction.account),
             )
             .execution_options(populate_existing=True)
         )

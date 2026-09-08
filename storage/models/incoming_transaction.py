@@ -1,17 +1,36 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DECIMAL, CheckConstraint, DateTime, ForeignKey, String, func
+from sqlalchemy import (
+    DECIMAL,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from storage.models.abstract import AbstractModel
+from storage.models.account import Account
 from storage.models.category import Category
 from storage.models.currency import Currency
 
 
 class IncomingTransaction(AbstractModel):
     __tablename__ = "incoming_transactions"
-    __table_args__ = (CheckConstraint("amount > 0", name="ck_income_amount_positive"),)
+    __table_args__ = (
+        Index(
+            "ix_incoming_transactions_account_occurred_at", "account_id", "occurred_at"
+        ),
+        CheckConstraint("amount > 0", name="ck_income_amount_positive"),
+    )
+
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("accounts.id", ondelete="RESTRICT"), nullable=True
+    )
+    account: Mapped[Account | None] = relationship()
 
     name: Mapped[str] = mapped_column(String(length=128), nullable=False)
     category_id: Mapped[int] = mapped_column(

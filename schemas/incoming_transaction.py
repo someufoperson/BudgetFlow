@@ -4,6 +4,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from domain.transaction_time import normalize_occurred_at, occurred_at_from_storage
+from schemas.account import AccountDetails
 from schemas.category import CategoryDetails
 from schemas.currency import CurrencyDetails
 from schemas.transaction import (
@@ -21,6 +22,7 @@ class CreateIncomingTransactionCommand(BaseModel):
         str_strip_whitespace=True,
     )
 
+    account_id: int | None = Field(default=None, gt=0)
     name: str = Field(min_length=1, max_length=128)
     category_id: int = Field(gt=0)
     amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
@@ -65,6 +67,8 @@ class IncomingTransactionResult(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    account_id: int | None = None
+    account: AccountDetails | None = None
     name: str
     category: CategoryDetails
     amount: Decimal

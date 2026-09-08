@@ -17,6 +17,7 @@ class TransactionState:
     pending_changes: TransactionChanges | None = None
     choosing_delete: bool = False
     pending_delete: ExpenseTransactionResult | IncomingTransactionResult | None = None
+    pending_account_id: int | None = None
 
     def clear(self) -> None:
         self.results.clear()
@@ -25,6 +26,7 @@ class TransactionState:
         self.pending_changes = None
         self.choosing_delete = False
         self.pending_delete = None
+        self.pending_account_id = None
 
 
 @dataclass(frozen=True, slots=True)

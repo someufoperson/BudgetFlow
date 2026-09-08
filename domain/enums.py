@@ -6,6 +6,11 @@ class CurrencyType(StrEnum):
     CRYPTO = "CRYPTO"
 
 
+class AccountType(StrEnum):
+    STANDARD = "STANDARD"
+    CREDIT = "CREDIT"
+
+
 class CategoryType(StrEnum):
     expense = "EXPENSE"
     income = "INCOME"

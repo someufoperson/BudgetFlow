@@ -24,8 +24,10 @@ class ExpenseTransactionRepository:
         amount: Decimal,
         currency: Currency,
         occurred_at: datetime,
+        account_id: int | None = None,
     ) -> ExpenseTransaction:
         expense_transaction = ExpenseTransaction(
+            account_id=account_id,
             name=name,
             category_id=category_id,
             amount=amount,
@@ -34,7 +36,9 @@ class ExpenseTransactionRepository:
         )
         self._session.add(expense_transaction)
         await self._session.flush()
-        await self._session.refresh(expense_transaction, attribute_names=["category"])
+        await self._session.refresh(
+            expense_transaction, attribute_names=["category", "account"]
+        )
         return expense_transaction
 
     async def delete(self, id: int, expected: TransactionUpdates | None = None) -> bool:
@@ -50,6 +54,7 @@ class ExpenseTransactionRepository:
     async def select(
         self,
         *,
+        account_id: int | None = None,
         name: str | None = None,
         amount: Decimal | None = None,
         amount_from: Decimal | None = None,
@@ -62,7 +67,11 @@ class ExpenseTransactionRepository:
         stmt = select(ExpenseTransaction).options(
             selectinload(ExpenseTransaction.currency),
             selectinload(ExpenseTransaction.category),
+            selectinload(ExpenseTransaction.account),
         )
+
+        if account_id is not None:
+            stmt = stmt.where(ExpenseTransaction.account_id == account_id)
 
         if amount is not None:
             stmt = stmt.where(ExpenseTransaction.amount == amount)
@@ -104,6 +113,7 @@ class ExpenseTransactionRepository:
             .options(
                 selectinload(ExpenseTransaction.currency),
                 selectinload(ExpenseTransaction.category),
+                selectinload(ExpenseTransaction.account),
             )
             .execution_options(populate_existing=True)
         )

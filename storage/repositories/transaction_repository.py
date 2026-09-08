@@ -4,6 +4,7 @@ from typing import TypedDict
 
 
 class TransactionUpdates(TypedDict, total=False):
+    account_id: int | None
     name: str
     category_id: int
     amount: Decimal

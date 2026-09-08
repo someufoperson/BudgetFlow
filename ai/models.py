@@ -10,6 +10,13 @@ from pydantic import (
     model_validator,
 )
 
+from schemas.account import (
+    AssignAccountTransactionsCommand,
+    CreateAccountCommand,
+    GetAccountByIdCommand,
+    GetAllAccountsCommand,
+    UpdateAccountCommand,
+)
 from schemas.category import CreateCategoryCommand, UpdateCategoryCommand
 from schemas.currency import CreateCurrencyCommand
 from schemas.expense_transaction import CreateExpenseTransactionCommand
@@ -24,6 +31,36 @@ class AIResponse(BaseModel):
 class CreateCurrencyResponse(AIResponse):
     action: Literal["create_currency"]
     arguments: CreateCurrencyCommand
+
+
+class CreateAccountResponse(AIResponse):
+    action: Literal["create_account"]
+    arguments: CreateAccountCommand
+
+
+class UpdateAccountResponse(AIResponse):
+    action: Literal["update_account"]
+    arguments: UpdateAccountCommand
+
+
+class GetAccountsResponse(AIResponse):
+    action: Literal["get_accounts"]
+    arguments: GetAllAccountsCommand
+
+
+class GetAccountResponse(AIResponse):
+    action: Literal["get_account"]
+    arguments: GetAccountByIdCommand
+
+
+class AssignAccountTransactionsResponse(AIResponse):
+    action: Literal["assign_account_transactions"]
+    arguments: AssignAccountTransactionsCommand
+
+
+class ConfirmAssignAccountTransactionsResponse(AIResponse):
+    action: Literal["confirm_assign_account_transactions"]
+    confirmed: bool = Field(strict=True)
 
 
 class CreateCategoryResponse(AIResponse):
@@ -175,6 +212,12 @@ class ConfirmDeleteTransactionResponse(AIResponse):
 
 AIResponseType = Annotated[
     CreateCurrencyResponse
+    | CreateAccountResponse
+    | UpdateAccountResponse
+    | GetAccountsResponse
+    | GetAccountResponse
+    | AssignAccountTransactionsResponse
+    | ConfirmAssignAccountTransactionsResponse
     | CreateCategoryResponse
     | UpdateCategoryResponse
     | CreateTransactionResponse

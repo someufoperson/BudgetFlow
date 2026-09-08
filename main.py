@@ -6,6 +6,7 @@ from requests import RequestException
 from ai.assistant import Assistant
 from ai.client import AIClient
 from ai.memory import ConversationMemory
+from services.account_service import AccountService
 from services.category_service import CategoryService
 from services.currency_service import CurrencyService
 from services.exceptions import ServiceError
@@ -14,6 +15,7 @@ from services.incoming_transaction_service import IncomingTransactionService
 from settings import settings
 from storage.db import async_session_factory, engine
 from storage.migrations import upgrade_database
+from storage.repositories.account_repository import AccountRepository
 from storage.repositories.category_repository import CategoryRepository
 from storage.repositories.currency_repository import CurrencyRepository
 from storage.repositories.expense_transaction_repository import (
@@ -42,11 +44,16 @@ async def run_console() -> None:
             category_repository=category_repository,
         )
 
+        account_service = AccountService(
+            session, AccountRepository(session), currency_repository
+        )
+
         expense_service = ExpenseTransactionService(
             session=session,
             transaction_repository=ExpenseTransactionRepository(session),
             currency_repository=currency_repository,
             category_service=category_service,
+            account_service=account_service,
         )
 
         incoming_service = IncomingTransactionService(
@@ -54,6 +61,7 @@ async def run_console() -> None:
             transaction_repository=IncomingTransactionRepository(session),
             currency_repository=currency_repository,
             category_service=category_service,
+            account_service=account_service,
         )
 
         assistant = Assistant(
@@ -63,6 +71,7 @@ async def run_console() -> None:
             incoming_service=incoming_service,
             category_service=category_service,
             memory=conversation_memory,
+            account_service=account_service,
         )
 
         print("💰 BudgetFlow запущен.")

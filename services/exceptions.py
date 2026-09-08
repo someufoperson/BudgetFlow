@@ -5,6 +5,16 @@ class ServiceError(Exception):
     """Base error service layer"""
 
 
+class AccountNotFoundError(ServiceError):
+    def __init__(self, account_id: int) -> None:
+        super().__init__(f"Счёт {account_id} не найден.")
+        self.account_id = account_id
+
+
+class AccountUnavailableError(ServiceError):
+    pass
+
+
 class TransactionChangedError(ServiceError):
     def __init__(self) -> None:
         super().__init__(

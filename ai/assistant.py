@@ -7,25 +7,37 @@ from ai.client import AIClient
 from ai.memory import ConversationMemory, TransactionState
 from ai.models import (
     AIResponseType,
+    AssignAccountTransactionsResponse,
     ClarifyResponse,
+    ConfirmAssignAccountTransactionsResponse,
     ConfirmDeleteTransactionResponse,
+    CreateAccountResponse,
     CreateCategoryResponse,
     CreateCurrencyResponse,
     CreateTransactionResponse,
     DeleteTransactionResponse,
     ExpenseTransactionItem,
+    GetAccountResponse,
+    GetAccountsResponse,
     IncomingTransactionItem,
     MoreTransactionsResponse,
     SearchTransactionArguments,
     SearchTransactionsResponse,
     SelectTransactionResponse,
     TextResponse,
+    UpdateAccountResponse,
     UpdateCategoryResponse,
     UpdateTransactionResponse,
     ai_response_adapter,
 )
-from ai.prompts import build_system_prompt
-from domain.enums import CategoryType
+from ai.prompts import ACCOUNT_PROMPT, build_system_prompt
+from domain.enums import AccountType, CategoryType
+from schemas.account import (
+    AccountResult,
+    AssignAccountTransactionsCommand,
+    GetAccountByIdCommand,
+    GetAllAccountsCommand,
+)
 from schemas.category import GetAllCategoriesCommand, UpdateCategoryCommand
 from schemas.expense_transaction import (
     DeleteExpenseTransactionCommand,
@@ -40,8 +52,14 @@ from schemas.incoming_transaction import (
     UpdateIncomingTransactionCommand,
 )
 from schemas.transaction import TransactionSnapshot
+from services.account_service import AccountService
 from services.category_service import CategoryService
 from services.currency_service import CurrencyService
+from services.exceptions import (
+    AccountNotFoundError,
+    AccountUnavailableError,
+    ServiceError,
+)
 from services.expense_transaction_service import ExpenseTransactionService
 from services.incoming_transaction_service import IncomingTransactionService
 from settings import settings
@@ -58,12 +76,14 @@ class Assistant:
         incoming_service: IncomingTransactionService,
         category_service: CategoryService,
         memory: ConversationMemory | None = None,
+        account_service: AccountService | None = None,
     ) -> None:
         self._client = client
         self._currency_service = currency_service
         self._expense_service = expense_service
         self._incoming_service = incoming_service
         self._category_service = category_service
+        self._account_service = account_service
         self._memory = memory
         self._transactions = (
             memory.transactions if memory is not None else TransactionState()
@@ -78,6 +98,21 @@ class Assistant:
         )
         system_prompt = build_system_prompt(categories)
         system_prompt += self._transaction_context()
+        if self._account_service is not None:
+            accounts = await self._account_service.get_all(
+                GetAllAccountsCommand(include_inactive=True)
+            )
+            system_prompt += (
+                ACCOUNT_PROMPT
+                + "\n"
+                + json.dumps(
+                    [account.model_dump(mode="json") for account in accounts],
+                    ensure_ascii=False,
+                )
+            )
+            system_prompt += (
+                f"\nPENDING_ACCOUNT_ASSIGNMENT: {self._transactions.pending_account_id}"
+            )
 
         if self._memory is None:
             raw_response = await asyncio.to_thread(
@@ -117,7 +152,33 @@ class Assistant:
             self._transactions.choosing_delete = False
             self._transactions.pending_delete = None
 
-        if isinstance(response, DeleteTransactionResponse):
+        if not isinstance(
+            response,
+            (
+                AssignAccountTransactionsResponse,
+                ConfirmAssignAccountTransactionsResponse,
+                ClarifyResponse,
+            ),
+        ):
+            self._transactions.pending_account_id = None
+
+        if isinstance(
+            response,
+            (
+                CreateAccountResponse,
+                UpdateAccountResponse,
+                GetAccountsResponse,
+                GetAccountResponse,
+                AssignAccountTransactionsResponse,
+                ConfirmAssignAccountTransactionsResponse,
+            ),
+        ):
+            self._transactions.pending_changes = None
+            try:
+                answer = await self._handle_account(response)
+            except ServiceError as error:
+                answer = f"⚠️ {error}"
+        elif isinstance(response, DeleteTransactionResponse):
             answer = await self._prepare_transaction_deletion(response)
         elif isinstance(response, ConfirmDeleteTransactionResponse):
             answer = await self._confirm_transaction_deletion(response.confirmed)
@@ -147,7 +208,10 @@ class Assistant:
             self._transactions.pending_changes = None
             answer = await self._update_category(response)
         elif isinstance(response, CreateTransactionResponse):
-            answer = await self._create_transactions(response)
+            try:
+                answer = await self._create_transactions(response)
+            except (AccountNotFoundError, AccountUnavailableError) as error:
+                answer = f"⚠️ {error}"
         elif isinstance(response, (ClarifyResponse, TextResponse)):
             if isinstance(response, TextResponse):
                 self._transactions.pending_changes = None
@@ -159,6 +223,103 @@ class Assistant:
             self._memory.add(user_message, response.model_dump_json())
 
         return answer
+
+    @staticmethod
+    def _format_account(account: AccountResult, *, compact: bool = False) -> str:
+        symbol = "₽" if account.currency_code == "RUB" else account.currency_code
+        balance = f"{account.balance:,.2f}".replace(",", " ").replace(".", ",")
+        opening = f"{account.opening_balance:,.2f}".replace(",", " ").replace(".", ",")
+        icon = "💳" if account.is_active else "💤"
+        started = account.opening_balance_at.astimezone(settings.timezone_info)
+        credit = ""
+        if (
+            account.account_type is AccountType.CREDIT
+            and account.credit_limit is not None
+        ):
+            credit = f"{account.credit_limit:,.2f}".replace(",", " ").replace(".", ",")
+        if compact:
+            line = f"{icon} {account.name} — {balance} {symbol}"
+            if account.is_default:
+                line += " ⭐"
+            if credit:
+                line += f" · лимит {credit} {symbol}"
+            if not account.is_active:
+                line += " · деактивирован"
+            return line
+        lines = [
+            f"{icon} {account.name} · {account.currency_code}",
+            f"💰 Расчётный остаток: {balance} {symbol}",
+            f"📍 Начальный остаток: {opening} {symbol} на {started:%d.%m.%Y, %H:%M:%S}",
+        ]
+        if credit:
+            lines.append(f"🏦 Кредитный лимит: {credit} {symbol}")
+        if account.is_default:
+            lines.append("⭐ По умолчанию")
+        if not account.is_active:
+            lines.append("💤 Деактивирован")
+        return "\n".join(lines)
+
+    async def _handle_account(
+        self,
+        response: CreateAccountResponse
+        | UpdateAccountResponse
+        | GetAccountsResponse
+        | GetAccountResponse
+        | AssignAccountTransactionsResponse
+        | ConfirmAssignAccountTransactionsResponse,
+    ) -> str:
+        service = self._account_service
+        if service is None:
+            return "⚠️ Управление счетами недоступно."
+        if isinstance(response, CreateAccountResponse):
+            return "✅ Счёт создан.\n" + self._format_account(
+                await service.create(response.arguments)
+            )
+        if isinstance(response, UpdateAccountResponse):
+            account = await service.update(response.arguments)
+            self._transactions.clear()
+            return f"✏️ Счёт «{account.name}» обновлён.\n" + self._format_account(
+                account
+            )
+        if isinstance(response, GetAccountsResponse):
+            accounts = await service.get_all(response.arguments)
+            return (
+                "\n".join(
+                    self._format_account(account, compact=True) for account in accounts
+                )
+                or "💳 Счетов пока нет."
+            )
+        if isinstance(response, GetAccountResponse):
+            return self._format_account(await service.get_by_id(response.arguments))
+        if isinstance(response, AssignAccountTransactionsResponse):
+            self._transactions.pending_account_id = None
+            account = await service.get_by_id(
+                GetAccountByIdCommand(id=response.arguments.id)
+            )
+            if not account.is_active:
+                return "⚠️ Сначала восстановите счёт."
+            self._transactions.pending_account_id = account.id
+            return (
+                f"🔗 Привязать все операции без счёта в валюте {account.currency_code} "
+                f"к счёту «{account.name}»? Другие валюты останутся без счёта. "
+                "Операции до точки отсчёта и в сам момент отсчёта не меняют остаток. "
+                "\nОтветьте «да, привязать» или «отмена»."
+            )
+        account_id = self._transactions.pending_account_id
+        self._transactions.pending_account_id = None
+        if not response.confirmed:
+            return "↩️ Привязка отменена."
+        if account_id is None:
+            return "⚠️ Нет привязки, ожидающей подтверждения. Сначала выберите счёт."
+        count = await service.assign_transactions(
+            AssignAccountTransactionsCommand(id=account_id)
+        )
+        self._transactions.clear()
+        account = await service.get_by_id(GetAccountByIdCommand(id=account_id))
+        return (
+            f"✅ К счёту «{account.name}» привязано операций: {count}.\n"
+            + self._format_account(account)
+        )
 
     async def _create_category(
         self,
@@ -221,7 +382,7 @@ class Assistant:
                 messages.append(
                     f"🔴 Добавлен расход «{expense.name}» "
                     f"на сумму {expense.amount} "
-                    f"{expense.currency.code}."
+                    f"{expense.currency.code} — {expense.account.name if expense.account else 'без счёта'}."
                 )
 
             elif isinstance(item, IncomingTransactionItem):
@@ -234,7 +395,7 @@ class Assistant:
                 messages.append(
                     f"🟢 Добавлен доход «{income.name}» "
                     f"на сумму {income.amount} "
-                    f"{income.currency.code}."
+                    f"{income.currency.code} — {income.account.name if income.account else 'без счёта'}."
                 )
 
         return "\n".join(messages)
@@ -276,7 +437,8 @@ class Assistant:
         return (
             f"{local:%d.%m.%Y %H:%M:%S} — {direction} «{transaction.name}» — "
             f"{transaction.amount:.2f} {transaction.currency.code} — "
-            f"{transaction.category.name}"
+            f"{transaction.category.name} — "
+            f"{transaction.account.name if transaction.account is not None else 'без счёта'}"
         )
 
     async def _find_transactions(self, filters: SearchTransactionArguments) -> None:
@@ -370,6 +532,7 @@ class Assistant:
                 "Нет транзакции, ожидающей подтверждения удаления. Сначала выберите её."
             )
         expected = TransactionSnapshot(
+            account_id=current.account_id,
             name=current.name,
             category_id=current.category.id,
             amount=current.amount,
@@ -419,6 +582,7 @@ class Assistant:
             return self._format_transaction(current)
         self._transactions.pending_changes = None
         expected = TransactionSnapshot(
+            account_id=current.account_id,
             name=current.name,
             category_id=current.category.id,
             amount=current.amount,

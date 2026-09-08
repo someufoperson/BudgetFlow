@@ -10,6 +10,7 @@ from domain.transaction_time import normalize_occurred_at
 class TransactionFilters(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    account_id: int | None = Field(default=None, gt=0)
     category_id: int | None = Field(default=None, gt=0)
     currency_code: str | None = Field(
         default=None, min_length=2, max_length=16, pattern=r"^[A-Za-z0-9]+$"
@@ -57,6 +58,7 @@ class TransactionChanges(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     name: str | None = Field(default=None, min_length=1, max_length=128)
+    account_id: int | None = Field(default=None, gt=0)
     category_id: int | None = Field(default=None, gt=0)
     amount: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=2)
     currency_code: str | None = Field(
@@ -97,6 +99,7 @@ class TransactionChanges(BaseModel):
 
 
 class TransactionSnapshot(BaseModel):
+    account_id: int | None = None
     name: str
     category_id: int
     amount: Decimal
