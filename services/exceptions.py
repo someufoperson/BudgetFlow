@@ -15,6 +15,19 @@ class AccountUnavailableError(ServiceError):
     pass
 
 
+class DebtNotFoundError(ServiceError):
+    def __init__(self, debt_id: int) -> None:
+        super().__init__(f"Долг {debt_id} не найден.")
+        self.debt_id = debt_id
+
+
+class DebtChangedError(ServiceError):
+    def __init__(self) -> None:
+        super().__init__(
+            "Карточка долга изменилась после выбора. Выберите её заново для удаления."
+        )
+
+
 class TransactionChangedError(ServiceError):
     def __init__(self) -> None:
         super().__init__(

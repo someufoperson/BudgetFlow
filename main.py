@@ -9,6 +9,7 @@ from ai.memory import ConversationMemory
 from services.account_service import AccountService
 from services.category_service import CategoryService
 from services.currency_service import CurrencyService
+from services.debt_service import DebtService
 from services.exceptions import ServiceError
 from services.expense_transaction_service import ExpenseTransactionService
 from services.incoming_transaction_service import IncomingTransactionService
@@ -18,6 +19,7 @@ from storage.migrations import upgrade_database
 from storage.repositories.account_repository import AccountRepository
 from storage.repositories.category_repository import CategoryRepository
 from storage.repositories.currency_repository import CurrencyRepository
+from storage.repositories.debt_repository import DebtRepository
 from storage.repositories.expense_transaction_repository import (
     ExpenseTransactionRepository,
 )
@@ -72,6 +74,12 @@ async def run_console() -> None:
             category_service=category_service,
             memory=conversation_memory,
             account_service=account_service,
+            debt_service=DebtService(
+                session,
+                DebtRepository(session),
+                currency_repository,
+                AccountRepository(session),
+            ),
         )
 
         print("💰 BudgetFlow запущен.")

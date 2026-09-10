@@ -1,5 +1,7 @@
 import asyncio
 import json
+from datetime import datetime
+from decimal import Decimal
 
 from pydantic import ValidationError
 
@@ -10,15 +12,20 @@ from ai.models import (
     AssignAccountTransactionsResponse,
     ClarifyResponse,
     ConfirmAssignAccountTransactionsResponse,
+    ConfirmDeleteDebtResponse,
     ConfirmDeleteTransactionResponse,
     CreateAccountResponse,
     CreateCategoryResponse,
     CreateCurrencyResponse,
+    CreateDebtResponse,
     CreateTransactionResponse,
+    DeleteDebtResponse,
     DeleteTransactionResponse,
     ExpenseTransactionItem,
     GetAccountResponse,
     GetAccountsResponse,
+    GetDebtResponse,
+    GetDebtsResponse,
     IncomingTransactionItem,
     MoreTransactionsResponse,
     SearchTransactionArguments,
@@ -27,11 +34,12 @@ from ai.models import (
     TextResponse,
     UpdateAccountResponse,
     UpdateCategoryResponse,
+    UpdateDebtResponse,
     UpdateTransactionResponse,
     ai_response_adapter,
 )
-from ai.prompts import ACCOUNT_PROMPT, build_system_prompt
-from domain.enums import AccountType, CategoryType
+from ai.prompts import ACCOUNT_PROMPT, DEBT_PROMPT, build_system_prompt
+from domain.enums import AccountType, CategoryType, DebtDirection
 from schemas.account import (
     AccountResult,
     AssignAccountTransactionsCommand,
@@ -39,6 +47,7 @@ from schemas.account import (
     GetAllAccountsCommand,
 )
 from schemas.category import GetAllCategoriesCommand, UpdateCategoryCommand
+from schemas.debt import DebtResult, DeleteDebtCommand, GetAllDebtsCommand
 from schemas.expense_transaction import (
     DeleteExpenseTransactionCommand,
     ExpenseTransactionResult,
@@ -55,6 +64,7 @@ from schemas.transaction import TransactionSnapshot
 from services.account_service import AccountService
 from services.category_service import CategoryService
 from services.currency_service import CurrencyService
+from services.debt_service import DebtService
 from services.exceptions import (
     AccountNotFoundError,
     AccountUnavailableError,
@@ -77,6 +87,7 @@ class Assistant:
         category_service: CategoryService,
         memory: ConversationMemory | None = None,
         account_service: AccountService | None = None,
+        debt_service: DebtService | None = None,
     ) -> None:
         self._client = client
         self._currency_service = currency_service
@@ -84,6 +95,7 @@ class Assistant:
         self._incoming_service = incoming_service
         self._category_service = category_service
         self._account_service = account_service
+        self._debt_service = debt_service
         self._memory = memory
         self._transactions = (
             memory.transactions if memory is not None else TransactionState()
@@ -114,6 +126,18 @@ class Assistant:
                 f"\nPENDING_ACCOUNT_ASSIGNMENT: {self._transactions.pending_account_id}"
             )
 
+        if self._debt_service is not None:
+            debts = await self._debt_service.get_all(
+                GetAllDebtsCommand(include_repaid=True)
+            )
+            system_prompt += DEBT_PROMPT + json.dumps(
+                [debt.model_dump(mode="json") for debt in debts], ensure_ascii=False
+            )
+            pending_debt = self._transactions.pending_debt_delete
+            system_prompt += "\nPENDING_DEBT_DELETION: " + (
+                pending_debt.model_dump_json() if pending_debt is not None else "нет"
+            )
+
         if self._memory is None:
             raw_response = await asyncio.to_thread(
                 self._client.complete,
@@ -139,6 +163,11 @@ class Assistant:
         user_message: str,
     ) -> str:
         response = await self.interpret(user_message)
+
+        if not isinstance(
+            response, (DeleteDebtResponse, ConfirmDeleteDebtResponse, ClarifyResponse)
+        ):
+            self._transactions.pending_debt_delete = None
 
         if not isinstance(
             response,
@@ -176,6 +205,22 @@ class Assistant:
             self._transactions.pending_changes = None
             try:
                 answer = await self._handle_account(response)
+            except ServiceError as error:
+                answer = f"⚠️ {error}"
+        elif isinstance(
+            response,
+            (
+                CreateDebtResponse,
+                UpdateDebtResponse,
+                GetDebtsResponse,
+                GetDebtResponse,
+                DeleteDebtResponse,
+                ConfirmDeleteDebtResponse,
+            ),
+        ):
+            self._transactions.pending_changes = None
+            try:
+                answer = await self._handle_debt(response)
             except ServiceError as error:
                 answer = f"⚠️ {error}"
         elif isinstance(response, DeleteTransactionResponse):
@@ -257,6 +302,115 @@ class Assistant:
             lines.append("⭐ По умолчанию")
         if not account.is_active:
             lines.append("💤 Деактивирован")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_debt(debt: DebtResult) -> str:
+        direction = (
+            "🔴 Я должен"
+            if debt.direction is DebtDirection.PAYABLE
+            else "🟢 Мне должны"
+        )
+        priorities = {
+            1: "⚪ Очень низкий",
+            2: "🔵 Низкий",
+            3: "🟡 Обычный",
+            4: "🟠 Высокий",
+            5: "🔴 Критический",
+        }
+        amount = f"{debt.amount:,.2f}".replace(",", " ").replace(".", ",")
+        symbol = "₽" if debt.currency_code == "RUB" else debt.currency_code
+        lines = [
+            f"📋 {debt.name} · №{debt.id}",
+            f"{direction} · 💰 Остаток: {amount} {symbol}",
+            f"{priorities[debt.priority]} · приоритет {debt.priority}/5",
+            f"📅 Остаток актуален на {debt.as_of_date:%d.%m.%Y}",
+        ]
+        if debt.amount == 0:
+            lines.append("✅ Погашен")
+        elif (
+            debt.due_date is not None
+            and debt.due_date < datetime.now(settings.timezone_info).date()
+        ):
+            lines.append("⏰ Срок возврата истёк")
+        if debt.counterparty:
+            lines.append(f"👤 Контрагент: {debt.counterparty}")
+        if debt.account is not None:
+            lines.append(f"💳 Счёт: {debt.account.name} · справочно")
+        if debt.due_date is not None:
+            lines.append(f"🗓️ Срок возврата: {debt.due_date:%d.%m.%Y}")
+        if debt.description:
+            lines.append(f"📝 {debt.description}")
+        return "\n".join(lines)
+
+    async def _handle_debt(
+        self,
+        response: CreateDebtResponse
+        | UpdateDebtResponse
+        | GetDebtsResponse
+        | GetDebtResponse
+        | DeleteDebtResponse
+        | ConfirmDeleteDebtResponse,
+    ) -> str:
+        service = self._debt_service
+        if service is None:
+            return "⚠️ Учёт долгов недоступен."
+        if isinstance(response, DeleteDebtResponse):
+            self._transactions.pending_debt_delete = None
+            debt = await service.get_by_id(response.arguments)
+            self._transactions.pending_debt_delete = debt
+            return (
+                "⚠️ Удалить это долговое обязательство?\n"
+                + self._format_debt(debt)
+                + "\n\nКарточка будет удалена без возможности восстановления. "
+                "Баланс счёта не изменится.\nОтветьте «да, удалить» или «отмена»."
+            )
+        if isinstance(response, ConfirmDeleteDebtResponse):
+            pending_debt = self._transactions.pending_debt_delete
+            self._transactions.pending_debt_delete = None
+            if not response.confirmed:
+                return "↩️ Удаление долга отменено."
+            if pending_debt is None:
+                return "⚠️ Нет долга, ожидающего подтверждения удаления. Сначала выберите карточку."
+            await service.delete(
+                DeleteDebtCommand(id=pending_debt.id, expected=pending_debt)
+            )
+            return f"🗑️ Долговое обязательство «{pending_debt.name}» удалено."
+        if isinstance(response, CreateDebtResponse):
+            return "✅ Долг добавлен.\n" + self._format_debt(
+                await service.create(response.arguments)
+            )
+        if isinstance(response, UpdateDebtResponse):
+            return "✏️ Долг обновлён.\n" + self._format_debt(
+                await service.update(response.arguments)
+            )
+        if isinstance(response, GetDebtResponse):
+            return self._format_debt(await service.get_by_id(response.arguments))
+        debts = await service.get_all(response.arguments)
+        summary = service.get_summary(debts)
+        lines = ["💰 Общая сумма долговых обязательств"]
+        totals: tuple[tuple[str, dict[str, Decimal]], ...] = (
+            ("🔴 Я должен", summary.payable),
+            ("🟢 Мне должны", summary.receivable),
+        )
+        for label, amounts in totals:
+            if not amounts:
+                lines.append(f"{label}: нет непогашенных долгов")
+                continue
+            lines.append(f"{label}:")
+            for currency_code, amount in sorted(amounts.items()):
+                formatted = f"{amount:,.2f}".replace(",", " ").replace(".", ",")
+                symbol = "₽" if currency_code == "RUB" else currency_code
+                lines.append(f"  • {formatted} {symbol}")
+        if debts:
+            lines.append(f"\n📋 Карточек: {len(debts)} · по убыванию приоритета")
+            lines.extend("\n" + self._format_debt(debt) for debt in debts)
+        else:
+            lines.append("\n📭 Долгов для показа нет.")
+        if not response.arguments.include_repaid:
+            lines.append(
+                "\n💡 Погашенные скрыты. Скажите «покажи все долги» для полного списка."
+            )
         return "\n".join(lines)
 
     async def _handle_account(

@@ -2,6 +2,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Literal
 
+from schemas.debt import DebtResult
 from schemas.expense_transaction import ExpenseTransactionResult
 from schemas.incoming_transaction import IncomingTransactionResult
 from schemas.transaction import TransactionChanges
@@ -18,6 +19,7 @@ class TransactionState:
     choosing_delete: bool = False
     pending_delete: ExpenseTransactionResult | IncomingTransactionResult | None = None
     pending_account_id: int | None = None
+    pending_debt_delete: DebtResult | None = None
 
     def clear(self) -> None:
         self.results.clear()
@@ -27,6 +29,7 @@ class TransactionState:
         self.choosing_delete = False
         self.pending_delete = None
         self.pending_account_id = None
+        self.pending_debt_delete = None
 
 
 @dataclass(frozen=True, slots=True)

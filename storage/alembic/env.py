@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 import storage.models.category
 import storage.models.currency
+import storage.models.debt
 import storage.models.expense_transaction
 import storage.models.incoming_transaction  # noqa: F401
 from settings import settings

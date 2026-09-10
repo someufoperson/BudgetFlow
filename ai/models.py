@@ -19,6 +19,12 @@ from schemas.account import (
 )
 from schemas.category import CreateCategoryCommand, UpdateCategoryCommand
 from schemas.currency import CreateCurrencyCommand
+from schemas.debt import (
+    CreateDebtCommand,
+    GetAllDebtsCommand,
+    GetDebtByIdCommand,
+    UpdateDebtCommand,
+)
 from schemas.expense_transaction import CreateExpenseTransactionCommand
 from schemas.incoming_transaction import CreateIncomingTransactionCommand
 from schemas.transaction import TransactionChanges, TransactionFilters
@@ -36,6 +42,36 @@ class CreateCurrencyResponse(AIResponse):
 class CreateAccountResponse(AIResponse):
     action: Literal["create_account"]
     arguments: CreateAccountCommand
+
+
+class CreateDebtResponse(AIResponse):
+    action: Literal["create_debt"]
+    arguments: CreateDebtCommand
+
+
+class UpdateDebtResponse(AIResponse):
+    action: Literal["update_debt"]
+    arguments: UpdateDebtCommand
+
+
+class GetDebtsResponse(AIResponse):
+    action: Literal["get_debts"]
+    arguments: GetAllDebtsCommand
+
+
+class GetDebtResponse(AIResponse):
+    action: Literal["get_debt"]
+    arguments: GetDebtByIdCommand
+
+
+class DeleteDebtResponse(AIResponse):
+    action: Literal["delete_debt"]
+    arguments: GetDebtByIdCommand
+
+
+class ConfirmDeleteDebtResponse(AIResponse):
+    action: Literal["confirm_delete_debt"]
+    confirmed: bool = Field(strict=True)
 
 
 class UpdateAccountResponse(AIResponse):
@@ -212,6 +248,12 @@ class ConfirmDeleteTransactionResponse(AIResponse):
 
 AIResponseType = Annotated[
     CreateCurrencyResponse
+    | CreateDebtResponse
+    | UpdateDebtResponse
+    | GetDebtsResponse
+    | GetDebtResponse
+    | DeleteDebtResponse
+    | ConfirmDeleteDebtResponse
     | CreateAccountResponse
     | UpdateAccountResponse
     | GetAccountsResponse

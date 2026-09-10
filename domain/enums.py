@@ -11,6 +11,11 @@ class AccountType(StrEnum):
     CREDIT = "CREDIT"
 
 
+class DebtDirection(StrEnum):
+    PAYABLE = "PAYABLE"
+    RECEIVABLE = "RECEIVABLE"
+
+
 class CategoryType(StrEnum):
     expense = "EXPENSE"
     income = "INCOME"
