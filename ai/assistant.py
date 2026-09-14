@@ -28,6 +28,7 @@ from ai.models import (
     GetAccountsResponse,
     GetDebtResponse,
     GetDebtsResponse,
+    GetReportResponse,
     IncomingTransactionItem,
     MoreTransactionsResponse,
     SearchTransactionArguments,
@@ -84,6 +85,8 @@ from services.exceptions import (
 )
 from services.expense_transaction_service import ExpenseTransactionService
 from services.incoming_transaction_service import IncomingTransactionService
+from services.report_image_service import ReportImageService
+from services.report_service import ReportService
 from services.transaction_time import resolve_occurred_at
 from settings import settings
 
@@ -101,6 +104,7 @@ class Assistant:
         memory: ConversationMemory | None = None,
         account_service: AccountService | None = None,
         debt_service: DebtService | None = None,
+        report_service: ReportService | None = None,
     ) -> None:
         self._client = client
         self._currency_service = currency_service
@@ -109,6 +113,8 @@ class Assistant:
         self._category_service = category_service
         self._account_service = account_service
         self._debt_service = debt_service
+        self._report_service = report_service
+        self.report_images: list[DocumentInput] = []
         self._screenshots = (
             memory.screenshots if memory is not None else ScreenshotState()
         )
@@ -212,6 +218,7 @@ class Assistant:
         self,
         user_message: str,
     ) -> str:
+        self.report_images = []
         screenshot_text = user_message.strip().casefold().rstrip(".!?")
         if screenshot_text in {
             "сохранить операции",
@@ -275,7 +282,25 @@ class Assistant:
         ):
             self._transactions.pending_account_id = None
 
-        if isinstance(
+        if isinstance(response, GetReportResponse):
+            self._transactions.clear()
+            if self._report_service is None:
+                raise ServiceError("Отчёты недоступны в этом подключении.")
+            report = await self._report_service.get(response.arguments)
+            answer = ReportService.format_text(report)
+            if response.arguments.format == "image":
+                try:
+                    self.report_images = await asyncio.to_thread(
+                        ReportImageService.render, report
+                    )
+                    answer = (
+                        f"Отчёт · {report.date_from:%d.%m.%Y} — "
+                        f"{report.date_to:%d.%m.%Y}. "
+                        "Валюты показаны раздельно, остатки по счетам — текущие."
+                    )
+                except ServiceError as error:
+                    answer += f"\n\n{error}"
+        elif isinstance(
             response,
             (
                 CreateAccountResponse,
@@ -356,6 +381,7 @@ class Assistant:
     async def handle_attachments(
         self, documents: list[DocumentInput], user_message: str = ""
     ) -> str:
+        self.report_images = []
         self._screenshots.ready = False
         self._transactions.clear()
         if (

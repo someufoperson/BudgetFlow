@@ -145,7 +145,8 @@ SYSTEM_PROMPT = """
 Всегда возвращай ровно один JSON-объект без Markdown, комментариев и текста вокруг.
 Допустимые action: create_transactions, create_currency, create_category,
 update_category, search_transactions, more_transactions, select_transaction,
-update_transaction, delete_transaction, confirm_delete_transaction, clarify, respond.
+update_transaction, delete_transaction, confirm_delete_transaction, get_report,
+clarify, respond.
 
 СОЗДАНИЕ ТРАНЗАКЦИЙ
 
@@ -452,6 +453,29 @@ delete_transaction с selection, а не select_transaction. Этот шаг т�
 """.strip()
 
 
+REPORT_PROMPT = """
+ОТЧЁТЫ
+Для свода, статистики или отчёта за период используй get_report, не respond
+и не search_transactions. Суммы и графики рассчитывает приложение, не выдумывай их.
+Пример: «отчёт за последние 30 дней»:
+{"action":"get_report","arguments":{"days":30,"format":"text"}}.
+«С изображением», «картинкой», «инфографикой», «с графиками» означают format:"image".
+Без явного запроса изображения выбирай format:"text". Для повторной просьбы
+«теперь картинкой» используй период последнего get_report из истории.
+days — целое от 1 до 366: сегодня и предыдущие days-1 календарных дней.
+Для конкретного периода передавай date_from и date_to в формате YYYY-MM-DD
+включительно, без days. Например за прошлый месяц укажи его первый и последний день.
+Если период не назван, используй days:30. Будущие даты и периоды длиннее 366 дней
+не поддерживаются — предложи уточнить период. Не меняй период молча.
+Отчёт содержит доходы, расходы, разницу, категории расходов, динамику расходов
+и ТЕКУЩИЕ остатки по всем счетам, включая неактивные. Это не остатки на конец
+исторического периода. Валюты раздельно, долги и лимиты не прибавляются к счетам.
+Фильтры отчёта по отдельному счёту, категории, направлению и конвертация пока
+не поддерживаются: уточни, подходит ли общий отчёт; не игнорируй ограничения запроса.
+Обычный запрос списка операций остаётся search_transactions, остатков — get_accounts.
+""".strip()
+
+
 def build_system_prompt(
     categories: Iterable[CategoryDetails],
     current_time: datetime | None = None,
@@ -477,6 +501,7 @@ def build_system_prompt(
     return (
         f"{SYSTEM_PROMPT}\n\n{TRANSACTION_TIME_PROMPT}\n\n"
         f"{TRANSACTION_SEARCH_PROMPT}\n\n"
+        f"{REPORT_PROMPT}\n\n"
         f"ТЕКУЩЕЕ ЛОКАЛЬНОЕ ВРЕМЯ: {local_time.isoformat(timespec='minutes')}\n"
         f"ЧАСОВОЙ ПОЯС: UTC{settings.timezone}\n\n"
         f"АКТУАЛЬНЫЕ КАТЕГОРИИ ИЗ БД:\n{serialized}"

@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from uuid import uuid4
 
 from pydantic import ValidationError
 from requests import RequestException
@@ -16,6 +17,7 @@ from services.document_service import DocumentService
 from services.exceptions import ServiceError
 from services.expense_transaction_service import ExpenseTransactionService
 from services.incoming_transaction_service import IncomingTransactionService
+from services.report_service import ReportService
 from settings import settings
 from storage.db import async_session_factory, engine
 from storage.migrations import upgrade_database
@@ -29,6 +31,7 @@ from storage.repositories.expense_transaction_repository import (
 from storage.repositories.incoming_transaction_repository import (
     IncomingTransactionRepository,
 )
+from storage.repositories.report_repository import ReportRepository
 
 
 async def run_console() -> None:
@@ -83,6 +86,9 @@ async def run_console() -> None:
                 currency_repository,
                 AccountRepository(session),
             ),
+            report_service=ReportService(
+                session, ReportRepository(session), account_service
+            ),
         )
 
         print("💰 BudgetFlow запущен.")
@@ -134,6 +140,20 @@ async def run_console() -> None:
                     )
                 else:
                     answer = await assistant.handle_message(user_message)
+                if assistant.report_images:
+                    directory = Path("output/reports")
+                    try:
+                        directory.mkdir(parents=True, exist_ok=True)
+                        for image in assistant.report_images:
+                            target = directory / f"{uuid4().hex}-{image.name}"
+                            await asyncio.to_thread(target.write_bytes, image.data)
+                            answer += f"\nИзображение: {target.resolve()}"
+                    except OSError as error:
+                        raise ServiceError(
+                            "Не удалось сохранить PNG в output/reports. Проверьте права записи."
+                        ) from error
+                    finally:
+                        assistant.report_images = []
             except ValidationError:
                 answer = "⚠️ AI вернул некорректный JSON"
             except RequestException as error:

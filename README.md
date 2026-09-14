@@ -23,6 +23,7 @@ ___
 7. Calculating account balances from an opening balance and subsequent transactions, with support for correcting the opening amount
 8. Credit accounts with a separately stored, editable credit limit
 9. Assigning previously recorded transactions without an account to an existing account after confirmation
+10. Period reports as text or PNG infographics, with totals calculated by Python
 
 Transfers between accounts, balance reconciliation, reminders, debt repayment planning, and purchase recommendations are not available yet. A credit limit is stored as account information; it does not increase the account balance or count as income.
 
@@ -82,6 +83,22 @@ To create a credit account, specify both its balance and its limit: "Create a cr
 After creating an account, you can ask: "Assign all transactions without an account to Main." The application asks for confirmation and assigns only transactions in that account's currency. Transactions already linked to another account remain unchanged.
 
 If you entered today's balance when creating the account, the older history will not be counted again. This lets you keep existing records and start calculating the account balance from the chosen moment.
+
+**Reports as text or images**
+
+- `Сделай отчёт за последние 30 дней` returns a text report.
+- `Сделай отчёт за последние 30 дней с изображением` returns a PNG infographic.
+- `Сделай отчёт с 1 по 31 августа 2026 года с изображением` selects an explicit period.
+
+The AI selects the dates and output format; Python calculates all totals. The default is text and 30 calendar days, including today, in the configured timezone. Supported periods contain 1–366 days and cannot end in the future. Reports cover all transactions; filtering a report to one account or category is not yet supported.
+
+Each currency has its own section or image. Reports include income, expenses, their difference, expense categories, and up to six date intervals of expense totals. Account balances are **current**, not historical period-end balances, and include inactive accounts. Credit limits and debt cards are not added. Transactions without an account contribute to period totals but not account balances.
+
+Images show the five largest expense categories plus an aggregate of the rest, and three accounts plus an aggregate of the rest. Text reports list all categories and accounts. Up to 12 currencies can be rendered per request; larger reports fall back to text. PNG generation runs in a worker thread using Pillow and the bundled Manrope font, without a browser or image-generation API. If rendering fails, the calculated text report is returned.
+
+The console saves images under `output/reports/` and prints their paths. The MAX handler sends images directly from memory and does not save report files on the server. Console files remain until you remove them.
+
+For a server update, copy the changed source files and the complete `services/fonts/` directory, including `OFL.txt`, run `uv sync`, and restart the application using its existing command. No database migration or new environment variable is required for reports. Update the local `theory_main.py` separately if you deploy the MAX handler: this file, like `uv.lock`, is currently ignored by Git. The rendering font is resolved relative to the source file, so no system font installation is needed on Linux.
 
 **Transactions from screenshots in Max**
 

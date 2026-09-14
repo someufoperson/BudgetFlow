@@ -28,6 +28,7 @@ from schemas.debt import (
 from schemas.document import ScreenshotTransactionDraft
 from schemas.expense_transaction import CreateExpenseTransactionCommand
 from schemas.incoming_transaction import CreateIncomingTransactionCommand
+from schemas.report import GetReportCommand
 from schemas.transaction import TransactionChanges, TransactionFilters
 
 
@@ -74,6 +75,11 @@ class GetDebtsResponse(AIResponse):
 class GetDebtResponse(AIResponse):
     action: Literal["get_debt"]
     arguments: GetDebtByIdCommand
+
+
+class GetReportResponse(AIResponse):
+    action: Literal["get_report"]
+    arguments: GetReportCommand
 
 
 class DeleteDebtResponse(AIResponse):
@@ -266,6 +272,7 @@ AIResponseType = Annotated[
     | UpdateDebtResponse
     | GetDebtsResponse
     | GetDebtResponse
+    | GetReportResponse
     | DeleteDebtResponse
     | ConfirmDeleteDebtResponse
     | CreateAccountResponse
