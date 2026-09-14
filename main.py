@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 from pydantic import ValidationError
 from requests import RequestException
@@ -6,10 +7,12 @@ from requests import RequestException
 from ai.assistant import Assistant
 from ai.client import AIClient
 from ai.memory import ConversationMemory
+from schemas.document import DocumentInput
 from services.account_service import AccountService
 from services.category_service import CategoryService
 from services.currency_service import CurrencyService
 from services.debt_service import DebtService
+from services.document_service import DocumentService
 from services.exceptions import ServiceError
 from services.expense_transaction_service import ExpenseTransactionService
 from services.incoming_transaction_service import IncomingTransactionService
@@ -84,6 +87,7 @@ async def run_console() -> None:
 
         print("💰 BudgetFlow запущен.")
         print("Для выхода введите exit.")
+        print('Для загрузки скриншота: /скриншот "путь к файлу"')
 
         while True:
             try:
@@ -100,9 +104,36 @@ async def run_console() -> None:
                 continue
 
             try:
-                answer = await assistant.handle_message(
-                    user_message,
-                )
+                command = user_message.split(maxsplit=1)
+                if command[0].casefold() in {"/скриншот", "/screenshot"}:
+                    if len(command) != 2:
+                        raise ServiceError('Укажите путь: /скриншот "путь к файлу"')
+                    filename = command[1].strip()
+                    if filename.startswith(('"', "'")):
+                        if len(filename) < 2 or filename[-1] != filename[0]:
+                            raise ServiceError("Закройте кавычки вокруг пути к файлу.")
+                        filename = filename[1:-1]
+                    if not filename:
+                        raise ServiceError("Укажите путь к изображению.")
+                    path = Path(filename).expanduser()
+                    try:
+                        if not path.is_file():
+                            raise ServiceError(
+                                "Изображение не найдено. Укажите путь к файлу."
+                            )
+                        with path.open("rb") as source:
+                            data = await asyncio.to_thread(
+                                source.read, DocumentService.MAX_BYTES + 1
+                            )
+                    except (OSError, ValueError) as error:
+                        raise ServiceError(
+                            "Не удалось открыть изображение. Проверьте путь и права доступа."
+                        ) from error
+                    answer = await assistant.handle_attachments(
+                        [DocumentInput(name=path.name, data=data)]
+                    )
+                else:
+                    answer = await assistant.handle_message(user_message)
             except ValidationError:
                 answer = "⚠️ AI вернул некорректный JSON"
             except RequestException as error:

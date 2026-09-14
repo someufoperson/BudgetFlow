@@ -7,6 +7,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 import storage.models.category
+import storage.models.credit
 import storage.models.currency
 import storage.models.debt
 import storage.models.expense_transaction

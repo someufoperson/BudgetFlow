@@ -25,6 +25,7 @@ from schemas.debt import (
     GetDebtByIdCommand,
     UpdateDebtCommand,
 )
+from schemas.document import ScreenshotTransactionDraft
 from schemas.expense_transaction import CreateExpenseTransactionCommand
 from schemas.incoming_transaction import CreateIncomingTransactionCommand
 from schemas.transaction import TransactionChanges, TransactionFilters
@@ -47,6 +48,17 @@ class CreateAccountResponse(AIResponse):
 class CreateDebtResponse(AIResponse):
     action: Literal["create_debt"]
     arguments: CreateDebtCommand
+
+
+class UpdateScreenshotTransactionResponse(AIResponse):
+    action: Literal["update_screenshot_transaction"]
+    selection: int = Field(gt=0, strict=True)
+    changes: ScreenshotTransactionDraft
+
+
+class SkipScreenshotTransactionResponse(AIResponse):
+    action: Literal["skip_screenshot_transaction"]
+    selection: int = Field(gt=0, strict=True)
 
 
 class UpdateDebtResponse(AIResponse):
@@ -248,6 +260,8 @@ class ConfirmDeleteTransactionResponse(AIResponse):
 
 AIResponseType = Annotated[
     CreateCurrencyResponse
+    | UpdateScreenshotTransactionResponse
+    | SkipScreenshotTransactionResponse
     | CreateDebtResponse
     | UpdateDebtResponse
     | GetDebtsResponse

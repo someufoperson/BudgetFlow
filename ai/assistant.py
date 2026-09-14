@@ -2,11 +2,13 @@ import asyncio
 import json
 from datetime import datetime
 from decimal import Decimal
+from hashlib import sha256
 
 from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 
 from ai.client import AIClient
-from ai.memory import ConversationMemory, TransactionState
+from ai.memory import ConversationMemory, ScreenshotState, TransactionState
 from ai.models import (
     AIResponseType,
     AssignAccountTransactionsResponse,
@@ -31,10 +33,12 @@ from ai.models import (
     SearchTransactionArguments,
     SearchTransactionsResponse,
     SelectTransactionResponse,
+    SkipScreenshotTransactionResponse,
     TextResponse,
     UpdateAccountResponse,
     UpdateCategoryResponse,
     UpdateDebtResponse,
+    UpdateScreenshotTransactionResponse,
     UpdateTransactionResponse,
     ai_response_adapter,
 )
@@ -48,13 +52,20 @@ from schemas.account import (
 )
 from schemas.category import GetAllCategoriesCommand, UpdateCategoryCommand
 from schemas.debt import DebtResult, DeleteDebtCommand, GetAllDebtsCommand
+from schemas.document import (
+    DocumentInput,
+    DocumentPage,
+    ScreenshotTransactionDraft,
+)
 from schemas.expense_transaction import (
+    CreateExpenseTransactionCommand,
     DeleteExpenseTransactionCommand,
     ExpenseTransactionResult,
     GetExpenseTransactionCommand,
     UpdateExpenseTransactionCommand,
 )
 from schemas.incoming_transaction import (
+    CreateIncomingTransactionCommand,
     DeleteIncomingTransactionCommand,
     GetIncomingTransactionCommand,
     IncomingTransactionResult,
@@ -65,6 +76,7 @@ from services.account_service import AccountService
 from services.category_service import CategoryService
 from services.currency_service import CurrencyService
 from services.debt_service import DebtService
+from services.document_service import DocumentService
 from services.exceptions import (
     AccountNotFoundError,
     AccountUnavailableError,
@@ -72,6 +84,7 @@ from services.exceptions import (
 )
 from services.expense_transaction_service import ExpenseTransactionService
 from services.incoming_transaction_service import IncomingTransactionService
+from services.transaction_time import resolve_occurred_at
 from settings import settings
 
 type TransactionResult = ExpenseTransactionResult | IncomingTransactionResult
@@ -96,6 +109,9 @@ class Assistant:
         self._category_service = category_service
         self._account_service = account_service
         self._debt_service = debt_service
+        self._screenshots = (
+            memory.screenshots if memory is not None else ScreenshotState()
+        )
         self._memory = memory
         self._transactions = (
             memory.transactions if memory is not None else TransactionState()
@@ -109,6 +125,12 @@ class Assistant:
             GetAllCategoriesCommand(),
         )
         system_prompt = build_system_prompt(categories)
+        system_prompt += (
+            "\nСоздание и ведение банковских кредитных обязательств, импорт договоров "
+            "и графиков платежей отключены. На такие запросы объясни это через text; "
+            "не заменяй банковскую карточку созданием долга или счёта. Реестр долгов "
+            "перед людьми и явно запрошенные кредитные счета с лимитом доступны."
+        )
         system_prompt += self._transaction_context()
         if self._account_service is not None:
             accounts = await self._account_service.get_all(
@@ -138,6 +160,28 @@ class Assistant:
                 pending_debt.model_dump_json() if pending_debt is not None else "нет"
             )
 
+        if self._screenshots.drafts:
+            system_prompt += (
+                "\nЧЕРНОВИКИ ОПЕРАЦИЙ СО СКРИНШОТОВ (нумерация с 1): "
+                + json.dumps(
+                    [item.model_dump(mode="json") for item in self._screenshots.drafts],
+                    ensure_ascii=False,
+                )
+                + "\nУточнения пользователя вноси только через "
+                '{"action":"update_screenshot_transaction","selection":1,"changes":{...}}. '
+                "changes содержит только явно изменённые поля. Для исключения строки: "
+                '{"action":"skip_screenshot_transaction","selection":1}. '
+                "После исключения нумерация меняется. Не вызывай create_transactions "
+                "для этих черновиков. Сохранение выполняет приложение только по фразе "
+                "«сохранить операции» после показа готового списка. "
+                "«отмена скриншотов» отменяет импорт; «продолжить скриншоты» показывает список. "
+                "Не выдумывай дату, время, направление или статус. Суммы в строках. "
+                "Переводы между своими счетами не поддерживаются. Поля черновика: "
+                + json.dumps(
+                    ScreenshotTransactionDraft.model_json_schema(), ensure_ascii=False
+                )
+            )
+
         if self._memory is None:
             raw_response = await asyncio.to_thread(
                 self._client.complete,
@@ -155,14 +199,54 @@ class Assistant:
         try:
             return ai_response_adapter.validate_json(raw_response)
         except ValidationError:
-            print(f"Некорректный ответ AI: {raw_response!r}", flush=True)
+            if not self._screenshots.drafts:
+                print(f"Некорректный ответ AI: {raw_response!r}", flush=True)
+            else:
+                print(
+                    "Некорректный ответ AI; содержимое скриншотов не записано в лог.",
+                    flush=True,
+                )
             raise
 
     async def handle_message(
         self,
         user_message: str,
     ) -> str:
+        screenshot_text = user_message.strip().casefold().rstrip(".!?")
+        if screenshot_text in {
+            "сохранить операции",
+            "отмена скриншотов",
+            "продолжить скриншоты",
+        }:
+            self._transactions.clear()
+            if screenshot_text == "сохранить операции":
+                return await self._confirm_screenshots()
+            if screenshot_text == "отмена скриншотов":
+                self._screenshots.clear()
+                return "↩️ Несохранённые операции со скриншотов отменены."
+            return await self._preview_screenshots()
+        self._screenshots.ready = False
         response = await self.interpret(user_message)
+        if self._screenshots.drafts and isinstance(response, CreateTransactionResponse):
+            return "Операции со скриншотов ещё не сохранены. Напишите «продолжить скриншоты», проверьте список и подтвердите его."
+        if isinstance(
+            response,
+            (UpdateScreenshotTransactionResponse, SkipScreenshotTransactionResponse),
+        ):
+            self._transactions.clear()
+            index = response.selection - 1
+            if index >= len(self._screenshots.drafts):
+                return "Такой строки в черновике нет. Напишите «продолжить скриншоты»."
+            if isinstance(response, SkipScreenshotTransactionResponse):
+                self._screenshots.drafts.pop(index)
+            else:
+                self._screenshots.drafts[index] = (
+                    ScreenshotTransactionDraft.model_validate(
+                        self._screenshots.drafts[index].model_dump()
+                        | response.changes.model_dump(exclude_unset=True)
+                    )
+                )
+            return await self._preview_screenshots()
 
         if not isinstance(
             response, (DeleteDebtResponse, ConfirmDeleteDebtResponse, ClarifyResponse)
@@ -268,6 +352,206 @@ class Assistant:
             self._memory.add(user_message, response.model_dump_json())
 
         return answer
+
+    async def handle_attachments(
+        self, documents: list[DocumentInput], user_message: str = ""
+    ) -> str:
+        self._screenshots.ready = False
+        self._transactions.clear()
+        if (
+            not documents
+            or len(documents) > 10
+            or sum(len(item.data) for item in documents) > DocumentService.MAX_BYTES
+        ):
+            raise ServiceError("Пришлите от 1 до 10 вложений общим размером до 20 МБ.")
+        pages: list[DocumentPage] = []
+        for document in documents:
+            prepared = await asyncio.to_thread(DocumentService.prepare, document)
+            pages.append(prepared[0])
+        if self._screenshots.drafts:
+            return "Сначала завершите текущий импорт или напишите «отмена скриншотов», затем пришлите новые изображения."
+        categories = await self._category_service.get_all(GetAllCategoriesCommand())
+        accounts = (
+            await self._account_service.get_all(GetAllAccountsCommand())
+            if self._account_service is not None
+            else []
+        )
+        context = (
+            f"\nЧасовой пояс: {settings.timezone}. "
+            f"Текущая дата: {datetime.now(settings.timezone_info):%Y-%m-%d}.\n"
+            + "Категории: "
+            + json.dumps(
+                [item.model_dump(mode="json") for item in categories],
+                ensure_ascii=False,
+            )
+            + "\nСчета: "
+            + json.dumps(
+                [
+                    {
+                        "id": item.id,
+                        "name": item.name,
+                        "currency_code": item.currency_code,
+                        "is_default": item.is_default,
+                    }
+                    for item in accounts
+                ],
+                ensure_ascii=False,
+            )
+            + "\nПодпись пользователя: "
+            + user_message
+        )
+        drafts: list[ScreenshotTransactionDraft] = []
+        warnings: list[str] = []
+        fingerprints: set[str] = set()
+        kinds: set[str] = set()
+        for document, page in zip(documents, pages, strict=True):
+            fingerprint = sha256(document.data).hexdigest()
+            if (
+                fingerprint in self._screenshots.processed
+                or fingerprint in fingerprints
+            ):
+                warnings.append(
+                    "Повторное изображение пропущено: оно уже обработано в этой сессии."
+                )
+                continue
+            result = await asyncio.to_thread(
+                self._client.extract_screenshot, page, context
+            )
+            kinds.add(result.kind)
+            drafts.extend(result.transactions)
+            warnings.extend(result.warnings)
+            fingerprints.add(fingerprint)
+        if not fingerprints:
+            return "\n".join(warnings)
+        if kinds != {"transactions"}:
+            return (
+                "\n".join(warnings)
+                + "\nНе удалось однозначно выделить операции. Пришлите скриншот чека или истории операций."
+            )
+        if not drafts or len(drafts) > 20:
+            return "Нужно от 1 до 20 операций. Пришлите более чёткие скриншоты или разделите список."
+        self._screenshots.drafts = drafts
+        self._screenshots.warnings = warnings
+        self._screenshots.fingerprints = fingerprints
+        return await self._preview_screenshots()
+
+    async def _preview_screenshots(self) -> str:
+        state = self._screenshots
+        state.ready = False
+        if not state.drafts:
+            state.clear()
+            return "Нет операций со скриншотов для сохранения."
+        accounts = (
+            await self._account_service.get_all(GetAllAccountsCommand())
+            if self._account_service is not None
+            else []
+        )
+        categories = await self._category_service.get_all(GetAllCategoriesCommand())
+        account_names = {item.id: item.name for item in accounts}
+        category_names = {item.id: item.name for item in categories}
+        default_account = next((item for item in accounts if item.is_default), None)
+        problems: list[str] = []
+        lines = ["Проверьте операции со скриншотов:"]
+        for index, draft in enumerate(state.drafts, 1):
+            if draft.account_id is None and default_account is not None:
+                draft.account_id = default_account.id
+            direction = {
+                "expense": "Расход",
+                "income": "Доход",
+                "transfer": "Перевод",
+            }.get(draft.direction or "", "направление не указано")
+            when = (
+                draft.occurred_at.astimezone(settings.timezone_info).strftime(
+                    "%d.%m.%Y %H:%M"
+                )
+                if draft.occurred_at is not None
+                else "дата и время не указаны"
+            )
+            lines.append(
+                f"{index}. {direction} · {draft.name or 'название не указано'} · {draft.amount if draft.amount is not None else '?'} {draft.currency_code or '?'} · {when} · счёт: {account_names.get(draft.account_id or 0, 'не выбран')} · категория: {category_names.get(draft.category_id or 0, 'не выбрана')}"
+            )
+            missing = [
+                label
+                for field, label in (
+                    ("name", "название"),
+                    ("amount", "сумму"),
+                    ("currency_code", "валюту"),
+                    ("occurred_at", "дату и время"),
+                    ("direction", "направление"),
+                )
+                if getattr(draft, field) is None
+            ]
+            if draft.account_id not in account_names:
+                missing.append("активный счёт")
+            elif any(
+                item.id == draft.account_id
+                and draft.currency_code is not None
+                and item.currency_code != draft.currency_code
+                for item in accounts
+            ):
+                missing.append("счёт в валюте операции")
+            if draft.category_id not in category_names:
+                missing.append("категорию")
+            if missing:
+                problems.append(f"Для строки {index} уточните: {', '.join(missing)}.")
+            if draft.direction == "transfer":
+                problems.append(
+                    f"Строка {index} — перевод между своими счетами. Исключите её: учёт переводов пока не поддерживается."
+                )
+            if draft.status != "completed":
+                problems.append(
+                    f"Для строки {index} уточните, выполнена ли операция, или исключите её из импорта."
+                )
+            if draft.occurred_at is not None:
+                try:
+                    resolve_occurred_at(draft.occurred_at)
+                except ServiceError:
+                    problems.append(
+                        f"Для строки {index} укажите дату операции, которая уже произошла."
+                    )
+        lines.extend(f"⚠️ {warning}" for warning in state.warnings)
+        if problems:
+            lines.extend(problems)
+            lines.append(
+                "Укажите исправления с номером строки или напишите «отмена скриншотов»."
+            )
+        else:
+            state.ready = True
+            lines.append(
+                "Напишите «сохранить операции», укажите исправления или «отмена скриншотов»."
+            )
+        return "\n".join(lines)
+
+    async def _confirm_screenshots(self) -> str:
+        state = self._screenshots
+        if not state.ready or not state.drafts:
+            return "Сначала проверьте готовый список: напишите «продолжить скриншоты»."
+        state.ready = False
+        messages: list[str] = []
+        while state.drafts:
+            draft = state.drafts[0]
+            arguments = draft.model_dump(exclude={"direction", "status"})
+            try:
+                if draft.direction == "expense":
+                    saved: TransactionResult = await self._expense_service.create(
+                        CreateExpenseTransactionCommand.model_validate(arguments)
+                    )
+                else:
+                    saved = await self._incoming_service.create(
+                        CreateIncomingTransactionCommand.model_validate(arguments)
+                    )
+            except (ServiceError, SQLAlchemyError, ValidationError):
+                return (
+                    "\n".join(messages)
+                    + f"\n⚠️ Осталось несохранённых операций: {len(state.drafts)}. Проверьте счёт, категорию и валюту: «продолжить скриншоты». Уже добавленные строки повторно не сохранятся."
+                )
+            state.drafts.pop(0)
+            state.processed.update(state.fingerprints)
+            self._transactions.results.append(saved)
+            self._transactions.shown_count += 1
+            messages.append("✅ Добавлено: " + self._format_transaction(saved))
+        state.clear()
+        return "\n".join(messages)
 
     @staticmethod
     def _format_account(account: AccountResult, *, compact: bool = False) -> str:

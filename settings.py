@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     api_key: str
     endpoint: str
     model: str
+    document_model: str = "deepseek-flash"
     db_name: str
     context_max_pairs: int = Field(default=5, ge=0)
     timezone: str = Field(default="+08:00", pattern=r"^[+-]\d{2}:\d{2}$")

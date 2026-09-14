@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from schemas.debt import DebtResult
+from schemas.document import ScreenshotTransactionDraft
 from schemas.expense_transaction import ExpenseTransactionResult
 from schemas.incoming_transaction import IncomingTransactionResult
 from schemas.transaction import TransactionChanges
@@ -32,6 +33,21 @@ class TransactionState:
         self.pending_debt_delete = None
 
 
+@dataclass(slots=True)
+class ScreenshotState:
+    drafts: list[ScreenshotTransactionDraft] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    ready: bool = False
+    fingerprints: set[str] = field(default_factory=set)
+    processed: set[str] = field(default_factory=set)
+
+    def clear(self) -> None:
+        self.drafts.clear()
+        self.warnings.clear()
+        self.ready = False
+        self.fingerprints.clear()
+
+
 @dataclass(frozen=True, slots=True)
 class ChatMessage:
     role: Literal["user", "assistant"]
@@ -51,6 +67,7 @@ class ConversationMemory:
 
         self._pairs: deque[ConversationPair] = deque(maxlen=max_pairs)
         self.transactions = TransactionState()
+        self.screenshots = ScreenshotState()
 
     def add(self, user_message: str, assistant_message: str) -> None:
         self._pairs.append(
@@ -76,3 +93,5 @@ class ConversationMemory:
     def clear(self) -> None:
         self._pairs.clear()
         self.transactions.clear()
+        self.screenshots.clear()
+        self.screenshots.processed.clear()
