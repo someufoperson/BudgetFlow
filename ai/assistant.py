@@ -14,23 +14,33 @@ from ai.models import (
     AssignAccountTransactionsResponse,
     ClarifyResponse,
     ConfirmAssignAccountTransactionsResponse,
+    ConfirmBalanceAdjustmentResponse,
     ConfirmDeleteDebtResponse,
     ConfirmDeleteTransactionResponse,
+    ConfirmDeleteTransferTransactionResponse,
     CreateAccountResponse,
+    CreateBalanceAdjustmentResponse,
     CreateCategoryResponse,
     CreateCurrencyResponse,
     CreateDebtResponse,
     CreateTransactionResponse,
+    CreateTransferTransactionResponse,
     DeleteDebtResponse,
     DeleteTransactionResponse,
+    DeleteTransferTransactionResponse,
     ExpenseTransactionItem,
     GetAccountResponse,
     GetAccountsResponse,
+    GetBalanceAdjustmentResponse,
+    GetBalanceAdjustmentsResponse,
     GetDebtResponse,
     GetDebtsResponse,
     GetReportResponse,
+    GetTransferTransactionResponse,
+    GetTransferTransactionsResponse,
     IncomingTransactionItem,
     MoreTransactionsResponse,
+    ReconcileAccountResponse,
     SearchTransactionArguments,
     SearchTransactionsResponse,
     SelectTransactionResponse,
@@ -41,6 +51,7 @@ from ai.models import (
     UpdateDebtResponse,
     UpdateScreenshotTransactionResponse,
     UpdateTransactionResponse,
+    UpdateTransferTransactionResponse,
     ai_response_adapter,
 )
 from ai.prompts import ACCOUNT_PROMPT, DEBT_PROMPT, build_system_prompt
@@ -50,6 +61,12 @@ from schemas.account import (
     AssignAccountTransactionsCommand,
     GetAccountByIdCommand,
     GetAllAccountsCommand,
+)
+from schemas.balance_adjustment import (
+    AccountReconciliationResult,
+    BalanceAdjustmentResult,
+    CreateBalanceAdjustmentCommand,
+    ReconcileAccountCommand,
 )
 from schemas.category import GetAllCategoriesCommand, UpdateCategoryCommand
 from schemas.debt import DebtResult, DeleteDebtCommand, GetAllDebtsCommand
@@ -73,12 +90,20 @@ from schemas.incoming_transaction import (
     UpdateIncomingTransactionCommand,
 )
 from schemas.transaction import TransactionSnapshot
+from schemas.transfer_transaction import (
+    DeleteTransferTransactionCommand,
+    GetTransferTransactionByIdCommand,
+    TransferTransactionResult,
+    UpdateTransferTransactionCommand,
+)
 from services.account_service import AccountService
+from services.balance_adjustment_service import BalanceAdjustmentService
 from services.category_service import CategoryService
 from services.currency_service import CurrencyService
 from services.debt_service import DebtService
 from services.document_service import DocumentService
 from services.exceptions import (
+    AccountBalanceChangedError,
     AccountNotFoundError,
     AccountUnavailableError,
     ServiceError,
@@ -88,6 +113,7 @@ from services.incoming_transaction_service import IncomingTransactionService
 from services.report_image_service import ReportImageService
 from services.report_service import ReportService
 from services.transaction_time import resolve_occurred_at
+from services.transfer_transaction_service import TransferTransactionService
 from settings import settings
 
 type TransactionResult = ExpenseTransactionResult | IncomingTransactionResult
@@ -105,6 +131,8 @@ class Assistant:
         account_service: AccountService | None = None,
         debt_service: DebtService | None = None,
         report_service: ReportService | None = None,
+        transfer_service: TransferTransactionService | None = None,
+        adjustment_service: BalanceAdjustmentService | None = None,
     ) -> None:
         self._client = client
         self._currency_service = currency_service
@@ -114,6 +142,8 @@ class Assistant:
         self._account_service = account_service
         self._debt_service = debt_service
         self._report_service = report_service
+        self._transfer_service = transfer_service
+        self._adjustment_service = adjustment_service
         self.report_images: list[DocumentInput] = []
         self._screenshots = (
             memory.screenshots if memory is not None else ScreenshotState()
@@ -138,6 +168,43 @@ class Assistant:
             "перед людьми и явно запрошенные кредитные счета с лимитом доступны."
         )
         system_prompt += self._transaction_context()
+        system_prompt += "\nПОКАЗАННЫЕ ПЕРЕВОДЫ: " + json.dumps(
+            [
+                self._format_transfer(item)
+                for item in self._transactions.transfers.values()
+            ],
+            ensure_ascii=False,
+        )
+        pending_transfer = self._transactions.pending_transfer_delete
+        transfer_filters = self._transactions.transfer_filters
+        adjustment_filters = self._transactions.adjustment_filters
+        system_prompt += "\nПОСЛЕДНЯЯ СТРАНИЦА ПЕРЕВОДОВ: " + (
+            transfer_filters.model_dump_json()
+            if transfer_filters is not None
+            else "нет"
+        )
+        system_prompt += "\nПОСЛЕДНЯЯ СТРАНИЦА КОРРЕКТИРОВОК: " + (
+            adjustment_filters.model_dump_json()
+            if adjustment_filters is not None
+            else "нет"
+        )
+        system_prompt += "\nУДАЛЕНИЕ ПЕРЕВОДА ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ: " + (
+            self._format_transfer(pending_transfer)
+            if pending_transfer is not None
+            else "нет"
+        )
+        reconciliation = self._transactions.reconciliation
+        system_prompt += "\nПОСЛЕДНЯЯ СВЕРКА: " + (
+            self._format_reconciliation(reconciliation)
+            if reconciliation is not None
+            else "нет"
+        )
+        pending_adjustment = self._transactions.pending_adjustment
+        system_prompt += "\nКОРРЕКТИРОВКА ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ: " + (
+            self._format_reconciliation(pending_adjustment.expected)
+            if pending_adjustment is not None
+            else "нет"
+        )
         if self._account_service is not None:
             accounts = await self._account_service.get_all(
                 GetAllAccountsCommand(include_inactive=True)
@@ -282,7 +349,67 @@ class Assistant:
         ):
             self._transactions.pending_account_id = None
 
-        if isinstance(response, GetReportResponse):
+        if not isinstance(
+            response,
+            (
+                DeleteTransferTransactionResponse,
+                ConfirmDeleteTransferTransactionResponse,
+                ClarifyResponse,
+            ),
+        ):
+            self._transactions.pending_transfer_delete = None
+        if not isinstance(
+            response,
+            (
+                CreateBalanceAdjustmentResponse,
+                ConfirmBalanceAdjustmentResponse,
+                ClarifyResponse,
+            ),
+        ):
+            self._transactions.pending_adjustment = None
+        if not isinstance(
+            response,
+            (
+                ReconcileAccountResponse,
+                CreateBalanceAdjustmentResponse,
+                ConfirmBalanceAdjustmentResponse,
+                ClarifyResponse,
+            ),
+        ):
+            self._transactions.reconciliation = None
+
+        if isinstance(
+            response,
+            (
+                CreateTransferTransactionResponse,
+                GetTransferTransactionsResponse,
+                GetTransferTransactionResponse,
+                UpdateTransferTransactionResponse,
+                DeleteTransferTransactionResponse,
+                ConfirmDeleteTransferTransactionResponse,
+            ),
+        ):
+            self._transactions.pending_changes = None
+            try:
+                answer = await self._handle_transfer(response)
+            except ServiceError as error:
+                answer = f"⚠️ {error}"
+        elif isinstance(
+            response,
+            (
+                ReconcileAccountResponse,
+                CreateBalanceAdjustmentResponse,
+                ConfirmBalanceAdjustmentResponse,
+                GetBalanceAdjustmentsResponse,
+                GetBalanceAdjustmentResponse,
+            ),
+        ):
+            self._transactions.pending_changes = None
+            try:
+                answer = await self._handle_adjustment(response)
+            except ServiceError as error:
+                answer = f"⚠️ {error}"
+        elif isinstance(response, GetReportResponse):
             self._transactions.clear()
             if self._report_service is None:
                 raise ServiceError("Отчёты недоступны в этом подключении.")
@@ -377,6 +504,213 @@ class Assistant:
             self._memory.add(user_message, response.model_dump_json())
 
         return answer
+
+    @staticmethod
+    def _format_transfer(transfer: TransferTransactionResult) -> str:
+        local = transfer.occurred_at.astimezone(settings.timezone_info)
+        return (
+            f"Перевод № {transfer.id}: «{transfer.source_account.name}» → "
+            f"«{transfer.destination_account.name}» — {transfer.amount:.2f} "
+            f"{transfer.currency_code}, {local:%d.%m.%Y %H:%M:%S %z}"
+        )
+
+    async def _handle_transfer(
+        self,
+        response: CreateTransferTransactionResponse
+        | GetTransferTransactionsResponse
+        | GetTransferTransactionResponse
+        | UpdateTransferTransactionResponse
+        | DeleteTransferTransactionResponse
+        | ConfirmDeleteTransferTransactionResponse,
+    ) -> str:
+        service = self._transfer_service
+        if service is None:
+            raise ServiceError("Переводы недоступны в этом подключении.")
+        if isinstance(response, CreateTransferTransactionResponse):
+            transfer = await service.create(response.arguments)
+            self._transactions.transfers[transfer.id] = transfer
+            return "✅ Записан совершённый перевод. " + self._format_transfer(transfer)
+        if isinstance(response, GetTransferTransactionsResponse):
+            transfers = await service.get_all(response.arguments)
+            self._transactions.transfer_filters = response.arguments
+            self._transactions.transfers = {item.id: item for item in transfers}
+            if not transfers:
+                return "Переводы по указанным условиям не найдены."
+            return "\n".join(self._format_transfer(item) for item in transfers) + (
+                "\nДля следующей страницы скажите «покажи ещё переводы»."
+                if len(transfers) == response.arguments.limit
+                else ""
+            )
+        if isinstance(response, GetTransferTransactionResponse):
+            transfer = await service.get_by_id(response.arguments)
+            self._transactions.transfers[transfer.id] = transfer
+            return self._format_transfer(transfer)
+        if isinstance(response, UpdateTransferTransactionResponse):
+            current = self._transactions.transfers.get(response.id)
+            if current is None:
+                current = await service.get_by_id(
+                    GetTransferTransactionByIdCommand(id=response.id)
+                )
+                self._transactions.transfers[current.id] = current
+                return (
+                    self._format_transfer(current)
+                    + "\nПроверьте выбранный перевод и повторите нужное изменение."
+                )
+            updated = await service.update(
+                UpdateTransferTransactionCommand(
+                    id=current.id, changes=response.changes, expected=current
+                )
+            )
+            self._transactions.transfers[updated.id] = updated
+            return (
+                "✏️ Перевод изменён.\nБыло: "
+                + self._format_transfer(current)
+                + "\nСтало: "
+                + self._format_transfer(updated)
+            )
+        if isinstance(response, DeleteTransferTransactionResponse):
+            self._transactions.pending_transfer_delete = None
+            transfer = await service.get_by_id(response.arguments)
+            self._transactions.pending_transfer_delete = transfer
+            return (
+                self._format_transfer(transfer)
+                + "\nУдалить перевод? Его влияние на оба счёта будет отменено с учётом их начальных остатков. Ответьте «да, удалить перевод» или «отмена»."
+            )
+        current = self._transactions.pending_transfer_delete
+        self._transactions.pending_transfer_delete = None
+        if not response.confirmed:
+            return "Удаление перевода отменено."
+        if current is None:
+            return "Нет перевода, ожидающего подтверждения удаления."
+        await service.delete(
+            DeleteTransferTransactionCommand(id=current.id, expected=current)
+        )
+        self._transactions.transfers.clear()
+        return "🗑️ Удалён " + self._format_transfer(current)
+
+    @staticmethod
+    def _format_reconciliation(result: AccountReconciliationResult) -> str:
+        local = result.reconciled_at.astimezone(settings.timezone_info)
+        return (
+            f"Счёт «{result.account.name}» ({result.account.currency_code})\n"
+            f"По учёту: {result.calculated_balance:.2f}\n"
+            f"Фактически: {result.actual_balance:.2f}\n"
+            f"Расхождение: {result.amount:+.2f}\n"
+            f"Сверка: {local:%d.%m.%Y %H:%M:%S %z}"
+        )
+
+    @classmethod
+    def _adjustment_confirmation(cls, result: AccountReconciliationResult) -> str:
+        return cls._format_reconciliation(result) + (
+            f"\nКорректировка изменит остаток на {result.amount:+.2f} "
+            f"до {result.actual_balance:.2f} {result.account.currency_code}. "
+            "Начальный остаток, доходы и расходы сохранятся. "
+            "Причина расхождения не установлена; запись будет видна в корректировках. "
+            "Ответьте «да, применить корректировку» или «отмена»."
+        )
+
+    @staticmethod
+    def _format_adjustment(result: BalanceAdjustmentResult) -> str:
+        local = result.occurred_at.astimezone(settings.timezone_info)
+        reconciled = result.reconciled_at.astimezone(settings.timezone_info)
+        return (
+            f"Корректировка № {result.id}: «{result.account.name}», "
+            f"{result.amount:+.2f} {result.currency_code}, {local:%d.%m.%Y %H:%M:%S %z}\n"
+            f"По учёту: {result.calculated_balance:.2f}; фактически: {result.actual_balance:.2f}.\n"
+            f"Сверка: {reconciled:%d.%m.%Y %H:%M:%S %z}. {result.description}"
+        )
+
+    async def _handle_adjustment(
+        self,
+        response: ReconcileAccountResponse
+        | CreateBalanceAdjustmentResponse
+        | ConfirmBalanceAdjustmentResponse
+        | GetBalanceAdjustmentsResponse
+        | GetBalanceAdjustmentResponse,
+    ) -> str:
+        service = self._adjustment_service
+        if service is None:
+            raise ServiceError("Сверка остатков недоступна в этом подключении.")
+        if isinstance(response, ReconcileAccountResponse):
+            self._transactions.reconciliation = None
+            result = await service.reconcile(response.arguments)
+            self._transactions.reconciliation = result
+            return self._format_reconciliation(result) + (
+                "\nОстатки совпадают. Корректировка не нужна."
+                if result.amount == 0
+                else "\nНичего не записано. Можно внести пропущенную операцию или исправить ошибочную. "
+                "Чтобы принять фактический остаток без выяснения причины, скажите «прими остаток»; потребуется подтверждение корректировки."
+            )
+        if isinstance(response, CreateBalanceAdjustmentResponse):
+            previous = self._transactions.reconciliation
+            self._transactions.pending_adjustment = None
+            if previous is None:
+                return "Сначала укажите счёт и фактический остаток для сверки."
+            result = await service.reconcile(
+                ReconcileAccountCommand(
+                    account_id=previous.account.id,
+                    actual_balance=previous.actual_balance,
+                    currency_code=previous.account.currency_code,
+                )
+            )
+            self._transactions.reconciliation = result
+            if result.amount == 0:
+                return (
+                    self._format_reconciliation(result)
+                    + "\nОстатки совпадают. Корректировка не нужна."
+                )
+            self._transactions.pending_adjustment = CreateBalanceAdjustmentCommand(
+                expected=result,
+                description="Принят фактический остаток, указанный пользователем. Причина расхождения не установлена.",
+            )
+            return self._adjustment_confirmation(result)
+        if isinstance(response, GetBalanceAdjustmentsResponse):
+            adjustments = await service.get_all(response.arguments)
+            self._transactions.adjustment_filters = response.arguments
+            if not adjustments:
+                return "Корректировки по указанным условиям не найдены."
+            return "\n\n".join(
+                self._format_adjustment(item) for item in adjustments
+            ) + (
+                "\nДля следующей страницы скажите «покажи ещё корректировки»."
+                if len(adjustments) == response.arguments.limit
+                else ""
+            )
+        if isinstance(response, GetBalanceAdjustmentResponse):
+            return self._format_adjustment(await service.get_by_id(response.arguments))
+        command = self._transactions.pending_adjustment
+        self._transactions.pending_adjustment = None
+        if not response.confirmed:
+            self._transactions.reconciliation = None
+            return "Корректировка отменена."
+        if command is None:
+            return (
+                "Нет корректировки, ожидающей подтверждения. Сначала выполните сверку."
+            )
+        try:
+            adjustment = await service.create(command)
+        except AccountBalanceChangedError as error:
+            result = error.reconciliation
+            self._transactions.reconciliation = result
+            if result.amount == 0:
+                return (
+                    self._format_reconciliation(result)
+                    + "\nОстатки уже совпадают. Корректировка не создана."
+                )
+            self._transactions.pending_adjustment = CreateBalanceAdjustmentCommand(
+                expected=result, description=command.description
+            )
+            return (
+                "Остаток или параметры счёта изменились. Ничего не записано.\n"
+                + self._adjustment_confirmation(result)
+            )
+        except ServiceError:
+            self._transactions.pending_adjustment = command
+            raise
+        self._transactions.reconciliation = None
+        if adjustment is None:
+            return "Остатки совпадают. Корректировка не создана."
+        return "✅ " + self._format_adjustment(adjustment)
 
     async def handle_attachments(
         self, documents: list[DocumentInput], user_message: str = ""

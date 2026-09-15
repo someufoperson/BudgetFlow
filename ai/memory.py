@@ -2,11 +2,20 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Literal
 
+from schemas.balance_adjustment import (
+    AccountReconciliationResult,
+    CreateBalanceAdjustmentCommand,
+    GetBalanceAdjustmentsCommand,
+)
 from schemas.debt import DebtResult
 from schemas.document import ScreenshotTransactionDraft
 from schemas.expense_transaction import ExpenseTransactionResult
 from schemas.incoming_transaction import IncomingTransactionResult
 from schemas.transaction import TransactionChanges
+from schemas.transfer_transaction import (
+    GetTransferTransactionsCommand,
+    TransferTransactionResult,
+)
 
 
 @dataclass(slots=True)
@@ -21,6 +30,12 @@ class TransactionState:
     pending_delete: ExpenseTransactionResult | IncomingTransactionResult | None = None
     pending_account_id: int | None = None
     pending_debt_delete: DebtResult | None = None
+    transfers: dict[int, TransferTransactionResult] = field(default_factory=dict)
+    pending_transfer_delete: TransferTransactionResult | None = None
+    reconciliation: AccountReconciliationResult | None = None
+    pending_adjustment: CreateBalanceAdjustmentCommand | None = None
+    transfer_filters: GetTransferTransactionsCommand | None = None
+    adjustment_filters: GetBalanceAdjustmentsCommand | None = None
 
     def clear(self) -> None:
         self.results.clear()
@@ -31,6 +46,12 @@ class TransactionState:
         self.pending_delete = None
         self.pending_account_id = None
         self.pending_debt_delete = None
+        self.transfers.clear()
+        self.pending_transfer_delete = None
+        self.reconciliation = None
+        self.pending_adjustment = None
+        self.transfer_filters = None
+        self.adjustment_filters = None
 
 
 @dataclass(slots=True)

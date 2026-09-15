@@ -10,6 +10,7 @@ from ai.client import AIClient
 from ai.memory import ConversationMemory
 from schemas.document import DocumentInput
 from services.account_service import AccountService
+from services.balance_adjustment_service import BalanceAdjustmentService
 from services.category_service import CategoryService
 from services.currency_service import CurrencyService
 from services.debt_service import DebtService
@@ -18,10 +19,14 @@ from services.exceptions import ServiceError
 from services.expense_transaction_service import ExpenseTransactionService
 from services.incoming_transaction_service import IncomingTransactionService
 from services.report_service import ReportService
+from services.transfer_transaction_service import TransferTransactionService
 from settings import settings
 from storage.db import async_session_factory, engine
 from storage.migrations import upgrade_database
 from storage.repositories.account_repository import AccountRepository
+from storage.repositories.balance_adjustment_repository import (
+    BalanceAdjustmentRepository,
+)
 from storage.repositories.category_repository import CategoryRepository
 from storage.repositories.currency_repository import CurrencyRepository
 from storage.repositories.debt_repository import DebtRepository
@@ -32,6 +37,9 @@ from storage.repositories.incoming_transaction_repository import (
     IncomingTransactionRepository,
 )
 from storage.repositories.report_repository import ReportRepository
+from storage.repositories.transfer_transaction_repository import (
+    TransferTransactionRepository,
+)
 
 
 async def run_console() -> None:
@@ -88,6 +96,15 @@ async def run_console() -> None:
             ),
             report_service=ReportService(
                 session, ReportRepository(session), account_service
+            ),
+            transfer_service=TransferTransactionService(
+                session, TransferTransactionRepository(session), account_service
+            ),
+            adjustment_service=BalanceAdjustmentService(
+                session,
+                BalanceAdjustmentRepository(session),
+                AccountRepository(session),
+                account_service,
             ),
         )
 

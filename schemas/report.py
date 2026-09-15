@@ -46,6 +46,10 @@ class ReportCurrencyResult(BaseModel):
     balance: Decimal = Decimal("0.00")
     count: int = 0
     unassigned_count: int = 0
+    adjustment_count: int = 0
+    adjustment_increase: Decimal = Decimal("0.00")
+    adjustment_decrease: Decimal = Decimal("0.00")
+    adjustment_total: Decimal = Decimal("0.00")
     categories: list[ReportCategoryResult] = Field(default_factory=list)
     periods: list[ReportPeriodResult] = Field(default_factory=list)
     accounts: list[AccountResult] = Field(default_factory=list)

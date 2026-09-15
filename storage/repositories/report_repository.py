@@ -4,6 +4,7 @@ from decimal import Decimal
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from storage.models.balance_adjustment import BalanceAdjustment
 from storage.models.category import Category
 from storage.models.expense_transaction import ExpenseTransaction
 from storage.models.incoming_transaction import IncomingTransaction
@@ -12,6 +13,37 @@ from storage.models.incoming_transaction import IncomingTransaction
 class ReportRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def get_adjustments(
+        self, occurred_from: datetime, occurred_to: datetime
+    ) -> list[tuple[str, int, Decimal, Decimal]]:
+        result = await self._session.execute(
+            select(
+                BalanceAdjustment.currency_code,
+                func.count(BalanceAdjustment.id),
+                func.sum(
+                    case(
+                        (BalanceAdjustment.amount > 0, BalanceAdjustment.amount),
+                        else_=0,
+                    )
+                ),
+                func.sum(
+                    case(
+                        (BalanceAdjustment.amount < 0, -BalanceAdjustment.amount),
+                        else_=0,
+                    )
+                ),
+            )
+            .where(
+                BalanceAdjustment.occurred_at >= occurred_from,
+                BalanceAdjustment.occurred_at < occurred_to,
+            )
+            .group_by(BalanceAdjustment.currency_code)
+        )
+        return [
+            (code, count, increase, decrease)
+            for code, count, increase, decrease in result
+        ]
 
     async def get_totals(
         self, occurred_from: datetime, occurred_to: datetime, *, income: bool

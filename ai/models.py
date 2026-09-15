@@ -17,6 +17,11 @@ from schemas.account import (
     GetAllAccountsCommand,
     UpdateAccountCommand,
 )
+from schemas.balance_adjustment import (
+    GetBalanceAdjustmentByIdCommand,
+    GetBalanceAdjustmentsCommand,
+    ReconcileAccountCommand,
+)
 from schemas.category import CreateCategoryCommand, UpdateCategoryCommand
 from schemas.currency import CreateCurrencyCommand
 from schemas.debt import (
@@ -30,6 +35,12 @@ from schemas.expense_transaction import CreateExpenseTransactionCommand
 from schemas.incoming_transaction import CreateIncomingTransactionCommand
 from schemas.report import GetReportCommand
 from schemas.transaction import TransactionChanges, TransactionFilters
+from schemas.transfer_transaction import (
+    CreateTransferTransactionCommand,
+    GetTransferTransactionByIdCommand,
+    GetTransferTransactionsCommand,
+    TransferTransactionChanges,
+)
 
 
 class AIResponse(BaseModel):
@@ -39,6 +50,61 @@ class AIResponse(BaseModel):
 class CreateCurrencyResponse(AIResponse):
     action: Literal["create_currency"]
     arguments: CreateCurrencyCommand
+
+
+class CreateTransferTransactionResponse(AIResponse):
+    action: Literal["create_transfer_transaction"]
+    arguments: CreateTransferTransactionCommand
+
+
+class GetTransferTransactionsResponse(AIResponse):
+    action: Literal["get_transfer_transactions"]
+    arguments: GetTransferTransactionsCommand
+
+
+class GetTransferTransactionResponse(AIResponse):
+    action: Literal["get_transfer_transaction"]
+    arguments: GetTransferTransactionByIdCommand
+
+
+class UpdateTransferTransactionResponse(AIResponse):
+    action: Literal["update_transfer_transaction"]
+    id: int = Field(gt=0)
+    changes: TransferTransactionChanges
+
+
+class DeleteTransferTransactionResponse(AIResponse):
+    action: Literal["delete_transfer_transaction"]
+    arguments: GetTransferTransactionByIdCommand
+
+
+class ConfirmDeleteTransferTransactionResponse(AIResponse):
+    action: Literal["confirm_delete_transfer_transaction"]
+    confirmed: bool = Field(strict=True)
+
+
+class ReconcileAccountResponse(AIResponse):
+    action: Literal["reconcile_account"]
+    arguments: ReconcileAccountCommand
+
+
+class CreateBalanceAdjustmentResponse(AIResponse):
+    action: Literal["create_balance_adjustment"]
+
+
+class ConfirmBalanceAdjustmentResponse(AIResponse):
+    action: Literal["confirm_balance_adjustment"]
+    confirmed: bool = Field(strict=True)
+
+
+class GetBalanceAdjustmentsResponse(AIResponse):
+    action: Literal["get_balance_adjustments"]
+    arguments: GetBalanceAdjustmentsCommand
+
+
+class GetBalanceAdjustmentResponse(AIResponse):
+    action: Literal["get_balance_adjustment"]
+    arguments: GetBalanceAdjustmentByIdCommand
 
 
 class CreateAccountResponse(AIResponse):
@@ -266,6 +332,17 @@ class ConfirmDeleteTransactionResponse(AIResponse):
 
 AIResponseType = Annotated[
     CreateCurrencyResponse
+    | CreateTransferTransactionResponse
+    | GetTransferTransactionsResponse
+    | GetTransferTransactionResponse
+    | UpdateTransferTransactionResponse
+    | DeleteTransferTransactionResponse
+    | ConfirmDeleteTransferTransactionResponse
+    | ReconcileAccountResponse
+    | CreateBalanceAdjustmentResponse
+    | ConfirmBalanceAdjustmentResponse
+    | GetBalanceAdjustmentsResponse
+    | GetBalanceAdjustmentResponse
     | UpdateScreenshotTransactionResponse
     | SkipScreenshotTransactionResponse
     | CreateDebtResponse

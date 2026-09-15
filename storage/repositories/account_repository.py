@@ -7,8 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domain.enums import AccountType
 from storage.models.account import Account
+from storage.models.balance_adjustment import BalanceAdjustment
 from storage.models.expense_transaction import ExpenseTransaction
 from storage.models.incoming_transaction import IncomingTransaction
+from storage.models.transfer_transaction import TransferTransaction
 
 
 class AccountUpdates(TypedDict, total=False):
@@ -102,10 +104,34 @@ class AccountRepository:
                 ExpenseTransaction.occurred_at <= until,
             )
         )
+        incoming_transfers = await self._session.scalar(
+            select(func.sum(TransferTransaction.amount)).where(
+                TransferTransaction.destination_account_id == account.id,
+                TransferTransaction.occurred_at > account.opening_balance_at,
+                TransferTransaction.occurred_at <= until,
+            )
+        )
+        outgoing_transfers = await self._session.scalar(
+            select(func.sum(TransferTransaction.amount)).where(
+                TransferTransaction.source_account_id == account.id,
+                TransferTransaction.occurred_at > account.opening_balance_at,
+                TransferTransaction.occurred_at <= until,
+            )
+        )
+        adjustments = await self._session.scalar(
+            select(func.sum(BalanceAdjustment.amount)).where(
+                BalanceAdjustment.account_id == account.id,
+                BalanceAdjustment.occurred_at > account.opening_balance_at,
+                BalanceAdjustment.occurred_at <= until,
+            )
+        )
         return (
             account.opening_balance
             + (income or Decimal("0.00"))
             - (expense or Decimal("0.00"))
+            + (incoming_transfers or Decimal("0.00"))
+            - (outgoing_transfers or Decimal("0.00"))
+            + (adjustments or Decimal("0.00"))
         )
 
     async def assign_transactions(self, account: Account) -> int:

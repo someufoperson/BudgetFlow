@@ -58,6 +58,16 @@ class ReportService:
                 bounds.append((lower, upper))
         currencies: dict[str, ReportCurrencyResult] = {}
         async with self._session.begin():
+            for code, count, increase, decrease in await self._reports.get_adjustments(
+                occurred_from, occurred_to
+            ):
+                section = currencies.setdefault(
+                    code, ReportCurrencyResult(currency_code=code)
+                )
+                section.adjustment_count = count
+                section.adjustment_increase = increase
+                section.adjustment_decrease = decrease
+                section.adjustment_total = increase - decrease
             for income in (True, False):
                 for code, amount, count, unassigned in await self._reports.get_totals(
                     occurred_from, occurred_to, income=income
@@ -124,7 +134,23 @@ class ReportService:
                 ]
             )
             if not section.count:
-                lines.append("За период операций нет.")
+                lines.append(
+                    "За период доходов и расходов нет."
+                    if section.adjustment_count
+                    else "За период операций нет."
+                )
+            if section.adjustment_count:
+                lines.extend(
+                    [
+                        f"Корректировки остатков за период: {section.adjustment_count}",
+                        (
+                            f"Увеличение: {cls.format_amount(section.adjustment_increase)}; "
+                            f"уменьшение: {cls.format_amount(section.adjustment_decrease)}; "
+                            f"итог: {cls.format_amount(section.adjustment_total)}"
+                        ),
+                        "Корректировки не включены в доходы и расходы. Подробности: «покажи корректировки».",
+                    ]
+                )
             if section.categories:
                 lines.append("Расходы по категориям:")
                 lines.extend(

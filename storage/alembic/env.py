@@ -6,12 +6,14 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+import storage.models.balance_adjustment
 import storage.models.category
 import storage.models.credit
 import storage.models.currency
 import storage.models.debt
 import storage.models.expense_transaction
-import storage.models.incoming_transaction  # noqa: F401
+import storage.models.incoming_transaction
+import storage.models.transfer_transaction  # noqa: F401
 from settings import settings
 from storage.models.base import Base
 

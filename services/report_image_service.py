@@ -279,9 +279,46 @@ class ReportImageService:
                 17,
                 color=self._MUTED,
             )
-        self._text(48, 1590, "BUDGETFLOW / ЛИЧНЫЕ ФИНАНСЫ", 16, color=self._MUTED)
+        if section.adjustment_count:
+            expanded = Image.new("RGB", (2160, 3600), "#101216")
+            expanded.paste(self._image, (0, 0))
+            self._image = expanded
+            self._draw = ImageDraw.Draw(self._image)
+            self._text(
+                48,
+                1590,
+                f"Корректировки остатков за период: {section.adjustment_count}",
+                22,
+                bold=True,
+            )
+            self._text(
+                48,
+                1630,
+                f"Увеличение: {amount(section.adjustment_increase)} · Уменьшение: {amount(section.adjustment_decrease)}",
+                20,
+                width=984,
+                truncate=False,
+            )
+            self._text(
+                48,
+                1665,
+                f"Итог: {amount(section.adjustment_total)} {section.currency_code}",
+                20,
+                width=984,
+                truncate=False,
+            )
+            self._text(
+                48,
+                1700,
+                "Не включены в доходы и расходы. Подробности: «покажи корректировки».",
+                17,
+                width=984,
+            )
+            self._text(48, 1750, "BUDGETFLOW / ЛИЧНЫЕ ФИНАНСЫ", 16, color=self._MUTED)
+        else:
+            self._text(48, 1590, "BUDGETFLOW / ЛИЧНЫЕ ФИНАНСЫ", 16, color=self._MUTED)
         output = BytesIO()
-        self._image.resize((1080, 1640), Image.Resampling.LANCZOS).save(
-            output, format="PNG"
-        )
+        self._image.resize(
+            (1080, self._image.height // self._SCALE), Image.Resampling.LANCZOS
+        ).save(output, format="PNG")
         return output.getvalue()

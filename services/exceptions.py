@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from schemas.balance_adjustment import AccountReconciliationResult
+
 
 class ServiceError(Exception):
     """Base error service layer"""
@@ -13,6 +15,26 @@ class AccountNotFoundError(ServiceError):
 
 class AccountUnavailableError(ServiceError):
     pass
+
+
+class TransferTransactionNotFoundError(ServiceError):
+    def __init__(self, transaction_id: int) -> None:
+        super().__init__(f"Перевод {transaction_id} не найден.")
+        self.transaction_id = transaction_id
+
+
+class BalanceAdjustmentNotFoundError(ServiceError):
+    def __init__(self, adjustment_id: int) -> None:
+        super().__init__(f"Корректировка {adjustment_id} не найдена.")
+        self.adjustment_id = adjustment_id
+
+
+class AccountBalanceChangedError(ServiceError):
+    def __init__(self, reconciliation: AccountReconciliationResult) -> None:
+        super().__init__(
+            "Остаток или параметры счёта изменились. Проверьте новый расчёт."
+        )
+        self.reconciliation = reconciliation
 
 
 class DebtNotFoundError(ServiceError):
