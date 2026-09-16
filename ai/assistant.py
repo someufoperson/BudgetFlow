@@ -20,6 +20,7 @@ from ai.models import (
     ConfirmDeleteTransactionResponse,
     ConfirmDeleteTransferTransactionResponse,
     ConfirmReverseBalanceAdjustmentResponse,
+    ConfirmScreenshotTransactionsResponse,
     CreateAccountResponse,
     CreateBalanceAdjustmentResponse,
     CreateCategoryResponse,
@@ -264,6 +265,24 @@ class Assistant:
             system_prompt += "\nPENDING_DEBT_DELETION: " + (
                 pending_debt.model_dump_json() if pending_debt is not None else "нет"
             )
+            pending_income = self._transactions.pending_debt_income
+            system_prompt += "\nPENDING_DEBT_INCOME: " + (
+                pending_income.model_dump_json()
+                if pending_income is not None
+                else "нет"
+            )
+            system_prompt += (
+                "\nЕсли PENDING_DEBT_INCOME содержит долг, приложение предложило "
+                "отдельно записать получение денег. При согласии используй "
+                "create_transactions с income, суммой и валютой предложения, "
+                "счётом по умолчанию либо явно выбранным пользователем счётом. "
+                "Выбирай существующую доходную категорию по смыслу «Взял в долг». "
+                "Если подходящей категории нет, предложи создать её или выбрать другую. "
+                "Не создавай категорию без согласия. Учти исправления суммы, даты, "
+                "счёта и категории. Дата актуальности долга не является датой получения: "
+                "для исторического долга уточни дату и полученную сумму. "
+                "Отказ — respond без создания транзакции. Не создавай долг повторно."
+            )
 
         if self._savings_goal_service is not None:
             goals = await self._savings_goal_service.get_all(
@@ -276,6 +295,19 @@ class Assistant:
 
         if self._screenshots.drafts:
             system_prompt += (
+                "\nТЕКУЩИЙ ИМПОРТ СКРИНШОТОВ. "
+                + (
+                    "Приложение уже показало пользователю готовый список ниже и спросило: "
+                    "«Добавить эти операции?». Сейчас ожидается его подтверждение или исправления. "
+                    "Согласие без исправлений относится к этому списку: верни "
+                    "confirm_screenshot_transactions с confirmed:true, не спрашивай повторно, "
+                    "какую операцию сохранить и что нужно сделать. "
+                    "Это актуальное ожидание, даже если история сообщений пуста. "
+                    if self._screenshots.ready
+                    else "Список пока не готов к сохранению: нужны уточнения или повторный показ. "
+                )
+                + "Если пользователь обсуждает другое действие, не принимай согласие "
+                "с ним за разрешение сохранить скриншоты. "
                 "\nЧЕРНОВИКИ ОПЕРАЦИЙ СО СКРИНШОТОВ (нумерация с 1): "
                 + json.dumps(
                     [item.model_dump(mode="json") for item in self._screenshots.drafts],
@@ -286,8 +318,11 @@ class Assistant:
                 "changes содержит только явно изменённые поля. Для исключения строки: "
                 '{"action":"skip_screenshot_transaction","selection":1}. '
                 "После исключения нумерация меняется. Не вызывай create_transactions "
-                "для этих черновиков. Сохранение выполняет приложение только по фразе "
-                "«сохранить операции» после показа готового списка. "
+                "для этих черновиков. При согласии сохранить показанный список верни "
+                '{"action":"confirm_screenshot_transactions","confirmed":true}. '
+                "При отказе от импорта верни тот же action с confirmed:false. "
+                "Принимай подтверждение по смыслу, не требуй точной фразы. "
+                "Если есть исправления, сначала внеси их, не подтверждай старый список. "
                 "«отмена скриншотов» отменяет импорт; «продолжить скриншоты» показывает список. "
                 "Не выдумывай дату, время, направление или статус. Суммы в строках. "
                 "Переводы между своими счетами не поддерживаются. Поля черновика: "
@@ -335,13 +370,33 @@ class Assistant:
         }:
             self._transactions.clear()
             if screenshot_text == "сохранить операции":
-                return await self._confirm_screenshots()
+                return await self._confirm_screenshots(user_message)
             if screenshot_text == "отмена скриншотов":
                 self._screenshots.clear()
                 return "↩️ Несохранённые операции со скриншотов отменены."
-            return await self._preview_screenshots()
-        self._screenshots.ready = False
+            return await self._preview_screenshots(user_message)
         response = await self.interpret(user_message)
+        if isinstance(response, ConfirmScreenshotTransactionsResponse):
+            self._transactions.clear()
+            if response.confirmed:
+                return await self._confirm_screenshots(user_message)
+            self._screenshots.clear()
+            return "↩️ Несохранённые операции со скриншотов отменены."
+        if not isinstance(
+            response,
+            (
+                UpdateScreenshotTransactionResponse,
+                SkipScreenshotTransactionResponse,
+                ClarifyResponse,
+                TextResponse,
+            ),
+        ):
+            self._screenshots.ready = False
+        if not isinstance(
+            response,
+            (CreateTransactionResponse, CreateCategoryResponse, ClarifyResponse),
+        ):
+            self._transactions.pending_debt_income = None
         if self._screenshots.drafts and isinstance(response, CreateTransactionResponse):
             return "Операции со скриншотов ещё не сохранены. Напишите «продолжить скриншоты», проверьте список и подтвердите его."
         if isinstance(
@@ -361,7 +416,7 @@ class Assistant:
                         | response.changes.model_dump(exclude_unset=True)
                     )
                 )
-            return await self._preview_screenshots()
+            return await self._preview_screenshots(user_message)
 
         if not isinstance(
             response, (DeleteDebtResponse, ConfirmDeleteDebtResponse, ClarifyResponse)
@@ -612,7 +667,7 @@ class Assistant:
             + (
                 "\nУдалить перевод? Удаляется только запись BudgetFlow, банковский перевод не отменяется. "
                 "Отдельная комиссия остаётся: при необходимости удалите её как расход. "
-                "Ответьте «да, удалить перевод» или «отмена»."
+                "Подтвердите удаление обычным сообщением или откажитесь."
             )
         )
 
@@ -751,7 +806,7 @@ class Assistant:
             f"до {result.actual_balance:.2f} {result.account.currency_code}. "
             "Начальный остаток, доходы и расходы сохранятся. "
             f"Пояснение: {description}\nЗапись будет видна в корректировках. "
-            "Ответьте «да, применить корректировку» или «отмена»."
+            "Подтвердите применение обычным сообщением или откажитесь."
         )
 
     @staticmethod
@@ -788,7 +843,7 @@ class Assistant:
             + (
                 f"\nПояснение отмены: {proposal.description}\n"
                 "Будет добавлена обратная запись. Последующие операции сохранятся; начальный остаток, доходы и расходы не изменятся. "
-                "Ответьте «да, отменить корректировку» или «отмена»."
+                "Подтвердите отмену корректировки обычным сообщением или откажитесь."
             )
         )
 
@@ -1015,9 +1070,9 @@ class Assistant:
         self._screenshots.drafts = drafts
         self._screenshots.warnings = warnings
         self._screenshots.fingerprints = fingerprints
-        return await self._preview_screenshots()
+        return await self._preview_screenshots(user_message)
 
-    async def _preview_screenshots(self) -> str:
+    async def _preview_screenshots(self, user_message: str) -> str:
         state = self._screenshots
         state.ready = False
         if not state.drafts:
@@ -1100,11 +1155,18 @@ class Assistant:
         else:
             state.ready = True
             lines.append(
-                "Напишите «сохранить операции», укажите исправления или «отмена скриншотов»."
+                "Добавить эти операции? Подтвердите обычным сообщением "
+                "(например, «да» или «сохранить операции»), укажите исправления или отмените импорт."
             )
-        return "\n".join(lines)
+        answer = "\n".join(lines)
+        if self._memory is not None:
+            self._memory.add(
+                user_message or "[Присланы скриншоты операций]",
+                ClarifyResponse(action="clarify", message=answer).model_dump_json(),
+            )
+        return answer
 
-    async def _confirm_screenshots(self) -> str:
+    async def _confirm_screenshots(self, user_message: str) -> str:
         state = self._screenshots
         if not state.ready or not state.drafts:
             return "Сначала проверьте готовый список: напишите «продолжить скриншоты»."
@@ -1132,10 +1194,17 @@ class Assistant:
             self._transactions.results.append(saved)
             self._transactions.shown_count += 1
             messages.append("✅ Добавлено: " + self._format_transaction(saved))
+            messages.append(await self._format_transaction_balance(saved))
             if saved.history_warnings:
                 messages.append(self._format_history_warnings(saved.history_warnings))
         state.clear()
-        return "\n".join(messages)
+        answer = "\n".join(messages)
+        if self._memory is not None:
+            self._memory.add(
+                user_message,
+                TextResponse(action="respond", message=answer).model_dump_json(),
+            )
+        return answer
 
     @staticmethod
     def _format_account(account: AccountResult, *, compact: bool = False) -> str:
@@ -1315,7 +1384,7 @@ class Assistant:
                 "⚠️ Удалить это долговое обязательство?\n"
                 + self._format_debt(debt)
                 + "\n\nКарточка будет удалена без возможности восстановления. "
-                "Баланс счёта не изменится.\nОтветьте «да, удалить» или «отмена»."
+                "Баланс счёта не изменится.\nПодтвердите удаление обычным сообщением или откажитесь."
             )
         if isinstance(response, ConfirmDeleteDebtResponse):
             pending_debt = self._transactions.pending_debt_delete
@@ -1329,9 +1398,18 @@ class Assistant:
             )
             return f"🗑️ Долговое обязательство «{pending_debt.name}» удалено."
         if isinstance(response, CreateDebtResponse):
-            return "✅ Долг добавлен.\n" + self._format_debt(
-                await service.create(response.arguments)
-            )
+            debt = await service.create(response.arguments)
+            answer = "✅ Долг добавлен.\n" + self._format_debt(debt)
+            if debt.direction == DebtDirection.PAYABLE and debt.amount > 0:
+                self._transactions.pending_debt_income = debt
+                answer += (
+                    f"\n\nДобавить получение {debt.amount:.2f} {debt.currency_code} "
+                    "отдельной доходной транзакцией в категорию «Взял в долг» "
+                    "на счёт по умолчанию? Можно выбрать другой счёт, категорию, "
+                    "уточнить сумму и дату или отказаться. "
+                    "Если деньги уже учтены в балансе, повторно добавлять их не нужно."
+                )
+            return answer
         if isinstance(response, UpdateDebtResponse):
             return "✏️ Долг обновлён.\n" + self._format_debt(
                 await service.update(response.arguments)
@@ -1409,7 +1487,7 @@ class Assistant:
                 f"🔗 Привязать все операции без счёта в валюте {account.currency_code} "
                 f"к счёту «{account.name}»? Другие валюты останутся без счёта. "
                 "Операции до точки отсчёта и в сам момент отсчёта не меняют остаток. "
-                "\nОтветьте «да, привязать» или «отмена»."
+                "\nПодтвердите привязку обычным сообщением или откажитесь."
             )
         account_id = self._transactions.pending_account_id
         self._transactions.pending_account_id = None
@@ -1512,7 +1590,27 @@ class Assistant:
                         self._format_history_warnings(income.history_warnings)
                     )
 
+            saved = self._transactions.results[-1]
+            messages.append(await self._format_transaction_balance(saved))
+            self._transactions.pending_debt_income = None
+
         return "\n".join(messages)
+
+    async def _format_transaction_balance(self, transaction: TransactionResult) -> str:
+        if transaction.account_id is None:
+            return "Расчётный баланс недоступен: операция без счёта."
+        if self._account_service is None:
+            return "Расчётный баланс счёта недоступен."
+        try:
+            account = await self._account_service.get_by_id(
+                GetAccountByIdCommand(id=transaction.account_id)
+            )
+        except (ServiceError, SQLAlchemyError):
+            return "Операция сохранена, но получить текущий баланс счёта не удалось."
+        return (
+            f"Расчётный баланс сейчас · {account.name}: "
+            f"{account.balance:.2f} {account.currency_code}."
+        )
 
     def _transaction_context(self) -> str:
         displayed = [
@@ -1632,7 +1730,7 @@ class Assistant:
         self._transactions.pending_delete = current
         return (
             f"⚠️ Удалить эту транзакцию?\n{self._format_transaction(current)}\n"
-            "Восстановление не предусмотрено. Ответьте «да, удалить» или «отмена»."
+            "Восстановление не предусмотрено. Подтвердите удаление обычным сообщением или откажитесь."
         )
 
     async def _confirm_transaction_deletion(self, confirmed: bool) -> str:

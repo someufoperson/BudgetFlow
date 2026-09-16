@@ -184,6 +184,11 @@ class CreateDebtResponse(AIResponse):
     arguments: CreateDebtCommand
 
 
+class ConfirmScreenshotTransactionsResponse(AIResponse):
+    action: Literal["confirm_screenshot_transactions"]
+    confirmed: bool = Field(strict=True)
+
+
 class UpdateScreenshotTransactionResponse(AIResponse):
     action: Literal["update_screenshot_transaction"]
     selection: int = Field(gt=0, strict=True)
@@ -419,6 +424,7 @@ AIResponseType = Annotated[
     | GetBalanceAdjustmentsResponse
     | GetBalanceAdjustmentResponse
     | UpdateScreenshotTransactionResponse
+    | ConfirmScreenshotTransactionsResponse
     | SkipScreenshotTransactionResponse
     | CreateDebtResponse
     | UpdateDebtResponse

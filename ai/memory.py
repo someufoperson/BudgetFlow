@@ -32,6 +32,7 @@ class TransactionState:
     pending_delete: ExpenseTransactionResult | IncomingTransactionResult | None = None
     pending_account_id: int | None = None
     pending_debt_delete: DebtResult | None = None
+    pending_debt_income: DebtResult | None = None
     transfers: dict[int, TransferTransactionResult] = field(default_factory=dict)
     pending_transfer_delete: TransferTransactionDeletionResult | None = None
     reconciliation: AccountReconciliationResult | None = None
@@ -49,6 +50,7 @@ class TransactionState:
         self.pending_delete = None
         self.pending_account_id = None
         self.pending_debt_delete = None
+        self.pending_debt_income = None
         self.transfers.clear()
         self.pending_transfer_delete = None
         self.reconciliation = None
