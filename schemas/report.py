@@ -38,6 +38,12 @@ class ReportPeriodResult(BaseModel):
     amount: Decimal = Decimal("0.00")
 
 
+class ReportAdjustmentResult(BaseModel):
+    id: int
+    reversal_of_id: int | None
+    reversed_by_id: int | None
+
+
 class ReportCurrencyResult(BaseModel):
     currency_code: str
     income: Decimal = Decimal("0.00")
@@ -50,6 +56,7 @@ class ReportCurrencyResult(BaseModel):
     adjustment_increase: Decimal = Decimal("0.00")
     adjustment_decrease: Decimal = Decimal("0.00")
     adjustment_total: Decimal = Decimal("0.00")
+    adjustment_links: list[ReportAdjustmentResult] = Field(default_factory=list)
     categories: list[ReportCategoryResult] = Field(default_factory=list)
     periods: list[ReportPeriodResult] = Field(default_factory=list)
     accounts: list[AccountResult] = Field(default_factory=list)

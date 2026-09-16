@@ -6,19 +6,23 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domain.transaction_time import occurred_at_from_storage, occurred_at_to_storage
-from schemas.account import AccountDetails
+from schemas.account import AccountDetails, AccountHistoryChange
 from schemas.balance_adjustment import (
     AccountReconciliationResult,
     BalanceAdjustmentResult,
+    BalanceAdjustmentReversalResult,
     CreateBalanceAdjustmentCommand,
     GetBalanceAdjustmentByIdCommand,
     GetBalanceAdjustmentsCommand,
+    PrepareBalanceAdjustmentReversalCommand,
     ReconcileAccountCommand,
+    ReverseBalanceAdjustmentCommand,
 )
 from services.account_service import AccountService
 from services.exceptions import (
     AccountBalanceChangedError,
     BalanceAdjustmentNotFoundError,
+    BalanceAdjustmentReversalChangedError,
     ServiceError,
 )
 from services.transaction_time import occurred_at_bounds
@@ -41,6 +45,89 @@ class BalanceAdjustmentService:
         self._adjustments = adjustment_repository
         self._accounts = account_repository
         self._account_service = account_service
+
+    async def _reversal_result(
+        self, command: PrepareBalanceAdjustmentReversalCommand
+    ) -> BalanceAdjustmentReversalResult:
+        original = await self._adjustments.get_by_id(command.id)
+        if original is None:
+            raise BalanceAdjustmentNotFoundError(command.id)
+        if original.reversal_of_id is not None:
+            raise ServiceError(
+                "Это запись отмены. Для дальнейшего исправления выполните новую сверку."
+            )
+        if original.reversed_by_id is not None:
+            raise ServiceError(
+                f"Корректировка № {original.id} уже отменена записью № {original.reversed_by_id}."
+            )
+        change = await self._account_service.get_balance_change(
+            AccountHistoryChange(
+                account_id=original.account_id,
+                occurred_at=original.occurred_at,
+                amount=-original.amount,
+            )
+        )
+        if change.amount != -original.amount:
+            raise ServiceError(
+                "Исходная корректировка не влияет на текущий остаток. Отмена не применена."
+            )
+        return BalanceAdjustmentReversalResult(
+            original=BalanceAdjustmentResult.model_validate(original),
+            balance_change=change,
+            description=command.description,
+            confirmation_id=uuid4(),
+        )
+
+    async def prepare_reverse(
+        self, command: PrepareBalanceAdjustmentReversalCommand
+    ) -> BalanceAdjustmentReversalResult:
+        async with self._session.begin():
+            await self._adjustments.begin_snapshot()
+            return await self._reversal_result(command)
+
+    async def reverse(
+        self, command: ReverseBalanceAdjustmentCommand
+    ) -> BalanceAdjustmentResult:
+        expected = command.expected
+        if command.id != expected.original.id:
+            raise ServiceError("Подтверждение относится к другой корректировке.")
+        try:
+            async with self._session.begin():
+                await self._adjustments.begin_snapshot(for_update=True)
+                original = await self._adjustments.get_by_id(command.id)
+                if original is None:
+                    raise BalanceAdjustmentNotFoundError(command.id)
+                if original.reversal is not None:
+                    reversal = await self._adjustments.get_by_id(original.reversal.id)
+                    if reversal is None:
+                        raise ServiceError("Не удалось прочитать отмену корректировки.")
+                    return BalanceAdjustmentResult.model_validate(reversal)
+                current = await self._reversal_result(
+                    PrepareBalanceAdjustmentReversalCommand(
+                        id=command.id, description=expected.description
+                    )
+                )
+                if current.model_dump(
+                    exclude={"confirmation_id"}
+                ) != expected.model_dump(exclude={"confirmation_id"}):
+                    raise BalanceAdjustmentReversalChangedError(current)
+                reversal = await self._adjustments.create(
+                    account_id=original.account_id,
+                    currency_code=original.currency_code,
+                    amount=-original.amount,
+                    calculated_balance=current.balance_change.account.balance,
+                    actual_balance=None,
+                    reconciled_at=None,
+                    occurred_at=occurred_at_to_storage(datetime.now(UTC)),
+                    description=expected.description,
+                    confirmation_id=str(expected.confirmation_id),
+                    reversal_of_id=original.id,
+                )
+                return BalanceAdjustmentResult.model_validate(reversal)
+        except SQLAlchemyError as error:
+            raise ServiceError(
+                "Не удалось отменить корректировку. Повторите подтверждение."
+            ) from error
 
     async def _reconcile(
         self, command: ReconcileAccountCommand

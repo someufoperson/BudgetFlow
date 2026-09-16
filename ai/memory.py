@@ -4,6 +4,7 @@ from typing import Literal
 
 from schemas.balance_adjustment import (
     AccountReconciliationResult,
+    BalanceAdjustmentReversalResult,
     CreateBalanceAdjustmentCommand,
     GetBalanceAdjustmentsCommand,
 )
@@ -14,6 +15,7 @@ from schemas.incoming_transaction import IncomingTransactionResult
 from schemas.transaction import TransactionChanges
 from schemas.transfer_transaction import (
     GetTransferTransactionsCommand,
+    TransferTransactionDeletionResult,
     TransferTransactionResult,
 )
 
@@ -31,9 +33,10 @@ class TransactionState:
     pending_account_id: int | None = None
     pending_debt_delete: DebtResult | None = None
     transfers: dict[int, TransferTransactionResult] = field(default_factory=dict)
-    pending_transfer_delete: TransferTransactionResult | None = None
+    pending_transfer_delete: TransferTransactionDeletionResult | None = None
     reconciliation: AccountReconciliationResult | None = None
     pending_adjustment: CreateBalanceAdjustmentCommand | None = None
+    pending_reversal: BalanceAdjustmentReversalResult | None = None
     transfer_filters: GetTransferTransactionsCommand | None = None
     adjustment_filters: GetBalanceAdjustmentsCommand | None = None
 
@@ -50,6 +53,7 @@ class TransactionState:
         self.pending_transfer_delete = None
         self.reconciliation = None
         self.pending_adjustment = None
+        self.pending_reversal = None
         self.transfer_filters = None
         self.adjustment_filters = None
 

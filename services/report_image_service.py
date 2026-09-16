@@ -280,7 +280,11 @@ class ReportImageService:
                 color=self._MUTED,
             )
         if section.adjustment_count:
-            expanded = Image.new("RGB", (2160, 3600), "#101216")
+            links = section.adjustment_links[:4]
+            extra_height = (len(links) + 1) * 32 if links else 0
+            expanded = Image.new(
+                "RGB", (2160, 3600 + extra_height * self._SCALE), "#101216"
+            )
             expanded.paste(self._image, (0, 0))
             self._image = expanded
             self._draw = ImageDraw.Draw(self._image)
@@ -314,7 +318,30 @@ class ReportImageService:
                 17,
                 width=984,
             )
-            self._text(48, 1750, "BUDGETFLOW / ЛИЧНЫЕ ФИНАНСЫ", 16, color=self._MUTED)
+            if links:
+                self._text(
+                    48,
+                    1740,
+                    "Связи отмен на сейчас. Полный список — в сообщении к отчёту.",
+                    17,
+                    width=984,
+                )
+                for index, link in enumerate(links):
+                    self._text(
+                        48,
+                        1772 + index * 32,
+                        ReportService.format_adjustment_link(link),
+                        18,
+                        width=984,
+                        truncate=False,
+                    )
+            self._text(
+                48,
+                1750 + extra_height,
+                "BUDGETFLOW / ЛИЧНЫЕ ФИНАНСЫ",
+                16,
+                color=self._MUTED,
+            )
         else:
             self._text(48, 1590, "BUDGETFLOW / ЛИЧНЫЕ ФИНАНСЫ", 16, color=self._MUTED)
         output = BytesIO()

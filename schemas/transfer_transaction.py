@@ -5,7 +5,11 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from domain.transaction_time import normalize_occurred_at, occurred_at_from_storage
-from schemas.account import AccountDetails
+from schemas.account import (
+    AccountBalanceChangeResult,
+    AccountDetails,
+    AccountHistoryWarning,
+)
 
 
 class CreateTransferTransactionCommand(BaseModel):
@@ -44,6 +48,9 @@ class GetTransferTransactionsCommand(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     account_id: int | None = Field(default=None, gt=0)
+    source_account_id: int | None = Field(default=None, gt=0)
+    destination_account_id: int | None = Field(default=None, gt=0)
+    amount: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=2)
     date_from: date | None = None
     date_to: date | None = None
     offset: int = Field(default=0, ge=0, strict=True)
@@ -97,6 +104,7 @@ class TransferTransactionResult(BaseModel):
     occurred_at: datetime
     created_at: datetime
     updated_at: datetime
+    history_warnings: list[AccountHistoryWarning] = Field(default_factory=list)
 
     @field_validator("occurred_at", mode="before")
     @classmethod
@@ -109,5 +117,11 @@ class UpdateTransferTransactionCommand(GetTransferTransactionByIdCommand):
     expected: TransferTransactionResult
 
 
+class TransferTransactionDeletionResult(BaseModel):
+    transfer: TransferTransactionResult
+    balance_changes: list[AccountBalanceChangeResult]
+    history_warnings: list[AccountHistoryWarning]
+
+
 class DeleteTransferTransactionCommand(GetTransferTransactionByIdCommand):
-    expected: TransferTransactionResult
+    expected: TransferTransactionDeletionResult

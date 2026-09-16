@@ -21,11 +21,12 @@ class BalanceAdjustmentRepository:
         currency_code: str,
         amount: Decimal,
         calculated_balance: Decimal,
-        actual_balance: Decimal,
-        reconciled_at: datetime,
+        actual_balance: Decimal | None,
+        reconciled_at: datetime | None,
         occurred_at: datetime,
         description: str,
         confirmation_id: str,
+        reversal_of_id: int | None = None,
     ) -> BalanceAdjustment:
         adjustment = BalanceAdjustment(
             account_id=account_id,
@@ -37,10 +38,11 @@ class BalanceAdjustmentRepository:
             occurred_at=occurred_at,
             description=description,
             confirmation_id=confirmation_id,
+            reversal_of_id=reversal_of_id,
         )
         self._session.add(adjustment)
         await self._session.flush()
-        await self._session.refresh(adjustment, attribute_names=["account"])
+        await self._session.refresh(adjustment, attribute_names=["account", "reversal"])
         return adjustment
 
     async def get_by_confirmation_id(
@@ -50,6 +52,8 @@ class BalanceAdjustmentRepository:
             select(BalanceAdjustment)
             .options(selectinload(BalanceAdjustment.account))
             .where(BalanceAdjustment.confirmation_id == confirmation_id)
+            .options(selectinload(BalanceAdjustment.reversal))
+            .execution_options(populate_existing=True)
         )
 
     async def get_by_id(self, adjustment_id: int) -> BalanceAdjustment | None:
@@ -57,6 +61,7 @@ class BalanceAdjustmentRepository:
             select(BalanceAdjustment)
             .options(selectinload(BalanceAdjustment.account))
             .where(BalanceAdjustment.id == adjustment_id)
+            .options(selectinload(BalanceAdjustment.reversal))
             .execution_options(populate_existing=True)
         )
 
@@ -70,7 +75,8 @@ class BalanceAdjustmentRepository:
         limit: int,
     ) -> list[BalanceAdjustment]:
         stmt = select(BalanceAdjustment).options(
-            selectinload(BalanceAdjustment.account)
+            selectinload(BalanceAdjustment.account),
+            selectinload(BalanceAdjustment.reversal),
         )
         if account_id is not None:
             stmt = stmt.where(BalanceAdjustment.account_id == account_id)

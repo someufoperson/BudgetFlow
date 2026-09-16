@@ -1,6 +1,10 @@
 from datetime import datetime
 
-from schemas.balance_adjustment import AccountReconciliationResult
+from schemas.balance_adjustment import (
+    AccountReconciliationResult,
+    BalanceAdjustmentReversalResult,
+)
+from schemas.transfer_transaction import TransferTransactionDeletionResult
 
 
 class ServiceError(Exception):
@@ -15,6 +19,20 @@ class AccountNotFoundError(ServiceError):
 
 class AccountUnavailableError(ServiceError):
     pass
+
+
+class TransferTransactionDeletionChangedError(ServiceError):
+    def __init__(self, proposal: TransferTransactionDeletionResult) -> None:
+        super().__init__(
+            "Перевод или показанное влияние изменились. Нужно новое подтверждение."
+        )
+        self.proposal = proposal
+
+
+class BalanceAdjustmentReversalChangedError(ServiceError):
+    def __init__(self, proposal: BalanceAdjustmentReversalResult) -> None:
+        super().__init__("Состояние изменилось. Нужно новое подтверждение отмены.")
+        self.proposal = proposal
 
 
 class TransferTransactionNotFoundError(ServiceError):

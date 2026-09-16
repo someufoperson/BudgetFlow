@@ -24,6 +24,9 @@ class TransferTransactionRepository:
     async def begin_write(self) -> None:
         await self._session.execute(text("BEGIN IMMEDIATE"))
 
+    async def begin_snapshot(self) -> None:
+        await self._session.execute(text("BEGIN"))
+
     async def create(
         self,
         source_account_id: int,
@@ -65,6 +68,9 @@ class TransferTransactionRepository:
         occurred_to: datetime | None,
         offset: int,
         limit: int,
+        source_account_id: int | None = None,
+        destination_account_id: int | None = None,
+        amount: Decimal | None = None,
     ) -> list[TransferTransaction]:
         stmt = select(TransferTransaction).options(
             selectinload(TransferTransaction.source_account),
@@ -79,6 +85,16 @@ class TransferTransactionRepository:
             )
         if occurred_from is not None:
             stmt = stmt.where(TransferTransaction.occurred_at >= occurred_from)
+        if source_account_id is not None:
+            stmt = stmt.where(
+                TransferTransaction.source_account_id == source_account_id
+            )
+        if destination_account_id is not None:
+            stmt = stmt.where(
+                TransferTransaction.destination_account_id == destination_account_id
+            )
+        if amount is not None:
+            stmt = stmt.where(TransferTransaction.amount == amount)
         if occurred_to is not None:
             stmt = stmt.where(TransferTransaction.occurred_at < occurred_to)
         return list(

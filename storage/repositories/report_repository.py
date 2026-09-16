@@ -1,8 +1,9 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from storage.models.balance_adjustment import BalanceAdjustment
 from storage.models.category import Category
@@ -13,6 +14,33 @@ from storage.models.incoming_transaction import IncomingTransaction
 class ReportRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def get_adjustment_links(
+        self, occurred_from: datetime, occurred_to: datetime
+    ) -> list[tuple[str, int, int | None, int | None]]:
+        reversal = aliased(BalanceAdjustment)
+        result = await self._session.execute(
+            select(
+                BalanceAdjustment.currency_code,
+                BalanceAdjustment.id,
+                BalanceAdjustment.reversal_of_id,
+                reversal.id,
+            )
+            .outerjoin(reversal, reversal.reversal_of_id == BalanceAdjustment.id)
+            .where(
+                BalanceAdjustment.occurred_at >= occurred_from,
+                BalanceAdjustment.occurred_at < occurred_to,
+                or_(
+                    BalanceAdjustment.reversal_of_id.is_not(None),
+                    reversal.id.is_not(None),
+                ),
+            )
+            .order_by(BalanceAdjustment.id)
+        )
+        return [
+            (code, adjustment_id, original_id, reversed_id)
+            for code, adjustment_id, original_id, reversed_id in result
+        ]
 
     async def get_adjustments(
         self, occurred_from: datetime, occurred_to: datetime

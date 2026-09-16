@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from schemas.account import GetAllAccountsCommand
 from schemas.report import (
     GetReportCommand,
+    ReportAdjustmentResult,
     ReportCategoryResult,
     ReportCurrencyResult,
     ReportPeriodResult,
@@ -68,6 +69,19 @@ class ReportService:
                 section.adjustment_increase = increase
                 section.adjustment_decrease = decrease
                 section.adjustment_total = increase - decrease
+            for (
+                code,
+                adjustment_id,
+                original_id,
+                reversed_id,
+            ) in await self._reports.get_adjustment_links(occurred_from, occurred_to):
+                currencies[code].adjustment_links.append(
+                    ReportAdjustmentResult(
+                        id=adjustment_id,
+                        reversal_of_id=original_id,
+                        reversed_by_id=reversed_id,
+                    )
+                )
             for income in (True, False):
                 for code, amount, count, unassigned in await self._reports.get_totals(
                     occurred_from, occurred_to, income=income
@@ -116,6 +130,26 @@ class ReportService:
         )
 
     @staticmethod
+    def format_adjustment_link(item: ReportAdjustmentResult) -> str:
+        if item.reversal_of_id is not None:
+            return f"Отмена № {item.id} корректировки № {item.reversal_of_id}"
+        return f"Корректировка № {item.id} отменена записью № {item.reversed_by_id}"
+
+    @classmethod
+    def format_adjustment_links(cls, report: ReportResult) -> str:
+        lines: list[str] = []
+        for section in report.currencies:
+            if section.adjustment_links:
+                lines.append(
+                    f"{section.currency_code}: связи отмен (статус на сейчас). Суммы учитываются по датам записей."
+                )
+                lines.extend(
+                    cls.format_adjustment_link(item)
+                    for item in section.adjustment_links
+                )
+        return "\n".join(lines)
+
+    @staticmethod
     def format_amount(amount: Decimal) -> str:
         return f"{amount:,.2f}".replace(",", " ").replace(".", ",")
 
@@ -150,6 +184,14 @@ class ReportService:
                         ),
                         "Корректировки не включены в доходы и расходы. Подробности: «покажи корректировки».",
                     ]
+                )
+            if section.adjustment_links:
+                lines.append(
+                    "Связи отмен (статус на сейчас; суммы учитываются по датам записей):"
+                )
+                lines.extend(
+                    cls.format_adjustment_link(item)
+                    for item in section.adjustment_links
                 )
             if section.categories:
                 lines.append("Расходы по категориям:")

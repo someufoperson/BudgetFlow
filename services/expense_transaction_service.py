@@ -2,6 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domain.enums import CategoryType
 from domain.transaction_time import occurred_at_to_storage
+from schemas.account import AccountHistoryChange, AccountHistoryWarning
 from schemas.expense_transaction import (
     CreateExpenseTransactionCommand,
     DeleteExpenseTransactionCommand,
@@ -74,7 +75,18 @@ class ExpenseTransactionService:
                 occurred_at=resolve_occurred_at(command.occurred_at),
             )
 
-        return ExpenseTransactionResult.model_validate(transaction)
+            result = ExpenseTransactionResult.model_validate(transaction)
+            result.history_warnings = await self._account_service.get_history_warnings(
+                [],
+                [
+                    AccountHistoryChange(
+                        account_id=result.account_id,
+                        occurred_at=result.occurred_at,
+                        amount=-result.amount,
+                    )
+                ],
+            )
+        return result
 
     async def get(
         self,
@@ -118,8 +130,12 @@ class ExpenseTransactionService:
     async def delete(
         self,
         command: DeleteExpenseTransactionCommand,
-    ) -> None:
+    ) -> list[AccountHistoryWarning]:
         async with self._session.begin():
+            stored = await self._transactions.get_by_id(command.id)
+            if stored is None:
+                raise ExpenseTransactionNotFoundError(command.id)
+            current = ExpenseTransactionResult.model_validate(stored)
             expected: TransactionUpdates | None = None
             if command.expected is not None:
                 transaction = await self._transactions.get_by_id(command.id)
@@ -139,6 +155,17 @@ class ExpenseTransactionService:
                 if expected is not None:
                     raise TransactionChangedError()
                 raise ExpenseTransactionNotFoundError(command.id)
+
+            return await self._account_service.get_history_warnings(
+                [
+                    AccountHistoryChange(
+                        account_id=current.account_id,
+                        occurred_at=current.occurred_at,
+                        amount=-current.amount,
+                    )
+                ],
+                [],
+            )
 
     async def update(
         self, command: UpdateExpenseTransactionCommand
@@ -208,4 +235,21 @@ class ExpenseTransactionService:
             updated = await self._transactions.update(command.id, updates, expected)
             if updated is None:
                 raise TransactionChangedError()
-            return ExpenseTransactionResult.model_validate(updated)
+            result = ExpenseTransactionResult.model_validate(updated)
+            result.history_warnings = await self._account_service.get_history_warnings(
+                [
+                    AccountHistoryChange(
+                        account_id=current.account_id,
+                        occurred_at=current.occurred_at,
+                        amount=-current.amount,
+                    )
+                ],
+                [
+                    AccountHistoryChange(
+                        account_id=result.account_id,
+                        occurred_at=result.occurred_at,
+                        amount=-result.amount,
+                    )
+                ],
+            )
+            return result

@@ -4,6 +4,7 @@ from typing import TypedDict
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from domain.enums import AccountType
 from storage.models.account import Account
@@ -25,6 +26,23 @@ class AccountUpdates(TypedDict, total=False):
 class AccountRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def get_active_adjustments(self, account_id: int) -> list[BalanceAdjustment]:
+        reversal = aliased(BalanceAdjustment)
+        return list(
+            await self._session.scalars(
+                select(BalanceAdjustment)
+                .where(
+                    BalanceAdjustment.account_id == account_id,
+                    BalanceAdjustment.reversal_of_id.is_(None),
+                    ~select(reversal.id)
+                    .where(reversal.reversal_of_id == BalanceAdjustment.id)
+                    .exists(),
+                )
+                .order_by(BalanceAdjustment.id)
+                .execution_options(populate_existing=True)
+            )
+        )
 
     async def create(
         self,

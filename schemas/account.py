@@ -104,3 +104,24 @@ class AccountResult(AccountDetails):
     @classmethod
     def restore_balance_timezone(cls, value: datetime) -> datetime:
         return occurred_at_from_storage(value)
+
+
+class AccountHistoryChange(BaseModel):
+    account_id: int | None
+    occurred_at: datetime
+    amount: Decimal
+
+
+class AccountHistoryWarning(BaseModel):
+    account_id: int
+    account_name: str
+    adjustment_id: int
+    amount: Decimal
+    currency_code: str
+    occurred_at: datetime
+
+
+class AccountBalanceChangeResult(BaseModel):
+    account: AccountResult
+    amount: Decimal
+    resulting_balance: Decimal

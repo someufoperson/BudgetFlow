@@ -20,6 +20,7 @@ from schemas.account import (
 from schemas.balance_adjustment import (
     GetBalanceAdjustmentByIdCommand,
     GetBalanceAdjustmentsCommand,
+    PrepareBalanceAdjustmentReversalCommand,
     ReconcileAccountCommand,
 )
 from schemas.category import CreateCategoryCommand, UpdateCategoryCommand
@@ -75,7 +76,19 @@ class UpdateTransferTransactionResponse(AIResponse):
 
 class DeleteTransferTransactionResponse(AIResponse):
     action: Literal["delete_transfer_transaction"]
-    arguments: GetTransferTransactionByIdCommand
+    arguments: GetTransferTransactionByIdCommand | None = None
+    filters: GetTransferTransactionsCommand | None = None
+
+    @model_validator(mode="after")
+    def validate_target(self) -> Self:
+        if (self.arguments is None) == (self.filters is None):
+            raise ValueError("Specify a transfer id or search filters")
+        if self.filters is not None and not any(
+            value is not None
+            for value in self.filters.model_dump(exclude={"offset", "limit"}).values()
+        ):
+            raise ValueError("Specify at least one search condition for deletion")
+        return self
 
 
 class ConfirmDeleteTransferTransactionResponse(AIResponse):
@@ -89,7 +102,23 @@ class ReconcileAccountResponse(AIResponse):
 
 
 class CreateBalanceAdjustmentResponse(AIResponse):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     action: Literal["create_balance_adjustment"]
+    description: str = Field(
+        default="Принят фактический остаток, указанный пользователем. Причина расхождения не установлена.",
+        min_length=1,
+        max_length=512,
+    )
+
+
+class ReverseBalanceAdjustmentResponse(AIResponse):
+    action: Literal["reverse_balance_adjustment"]
+    arguments: PrepareBalanceAdjustmentReversalCommand
+
+
+class ConfirmReverseBalanceAdjustmentResponse(AIResponse):
+    action: Literal["confirm_reverse_balance_adjustment"]
+    confirmed: bool = Field(strict=True)
 
 
 class ConfirmBalanceAdjustmentResponse(AIResponse):
@@ -340,6 +369,8 @@ AIResponseType = Annotated[
     | ConfirmDeleteTransferTransactionResponse
     | ReconcileAccountResponse
     | CreateBalanceAdjustmentResponse
+    | ReverseBalanceAdjustmentResponse
+    | ConfirmReverseBalanceAdjustmentResponse
     | ConfirmBalanceAdjustmentResponse
     | GetBalanceAdjustmentsResponse
     | GetBalanceAdjustmentResponse

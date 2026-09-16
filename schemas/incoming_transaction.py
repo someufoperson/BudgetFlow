@@ -4,7 +4,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from domain.transaction_time import normalize_occurred_at, occurred_at_from_storage
-from schemas.account import AccountDetails
+from schemas.account import AccountDetails, AccountHistoryWarning
 from schemas.category import CategoryDetails
 from schemas.currency import CurrencyDetails
 from schemas.transaction import (
@@ -76,6 +76,7 @@ class IncomingTransactionResult(BaseModel):
     occurred_at: datetime
     created_at: datetime
     updated_at: datetime
+    history_warnings: list[AccountHistoryWarning] = Field(default_factory=list)
 
     @field_validator("occurred_at", mode="before")
     @classmethod

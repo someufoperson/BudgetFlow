@@ -6,7 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from domain.transaction_time import normalize_occurred_at, occurred_at_from_storage
-from schemas.account import AccountDetails
+from schemas.account import AccountBalanceChangeResult, AccountDetails
 
 
 class ReconcileAccountCommand(BaseModel):
@@ -90,15 +90,43 @@ class BalanceAdjustmentResult(BaseModel):
     currency_code: str
     amount: Decimal
     calculated_balance: Decimal
-    actual_balance: Decimal
-    reconciled_at: datetime
+    actual_balance: Decimal | None
+    reconciled_at: datetime | None
+    reversal_of_id: int | None = None
+    reversed_by_id: int | None = None
     occurred_at: datetime
     description: str
     confirmation_id: UUID
     created_at: datetime
     updated_at: datetime
 
-    @field_validator("reconciled_at", "occurred_at", mode="before")
+    @field_validator("occurred_at", mode="before")
     @classmethod
     def restore_adjustment_timezone(cls, value: datetime) -> datetime:
         return occurred_at_from_storage(value)
+
+    @field_validator("reconciled_at", mode="before")
+    @classmethod
+    def restore_reconciliation_timezone(cls, value: datetime | None) -> datetime | None:
+        return occurred_at_from_storage(value) if value is not None else None
+
+
+class PrepareBalanceAdjustmentReversalCommand(GetBalanceAdjustmentByIdCommand):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    description: str = Field(
+        default="Отмена ошибочной корректировки по запросу пользователя.",
+        min_length=1,
+        max_length=512,
+    )
+
+
+class BalanceAdjustmentReversalResult(BaseModel):
+    original: BalanceAdjustmentResult
+    balance_change: AccountBalanceChangeResult
+    description: str
+    confirmation_id: UUID
+
+
+class ReverseBalanceAdjustmentCommand(GetBalanceAdjustmentByIdCommand):
+    expected: BalanceAdjustmentReversalResult

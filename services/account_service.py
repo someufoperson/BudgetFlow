@@ -1,11 +1,15 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from domain.transaction_time import occurred_at_to_storage
+from domain.transaction_time import occurred_at_from_storage, occurred_at_to_storage
 from schemas.account import (
+    AccountBalanceChangeResult,
+    AccountHistoryChange,
+    AccountHistoryWarning,
     AccountResult,
     AssignAccountTransactionsCommand,
     CreateAccountCommand,
@@ -35,6 +39,65 @@ class AccountService:
         self._session = session
         self._accounts = account_repository
         self._currencies = currency_repository
+
+    async def get_balance_change(
+        self, change: AccountHistoryChange
+    ) -> AccountBalanceChangeResult:
+        if change.account_id is None:
+            raise AccountUnavailableError("Для расчёта изменения нужен счёт.")
+        account = await self._accounts.get_by_id(change.account_id)
+        if account is None:
+            raise AccountNotFoundError(change.account_id)
+        result = await self._result(account)
+        amount = (
+            change.amount
+            if occurred_at_from_storage(account.opening_balance_at)
+            < occurred_at_from_storage(change.occurred_at)
+            <= datetime.now(UTC)
+            else Decimal("0.00")
+        )
+        return AccountBalanceChangeResult(
+            account=result, amount=amount, resulting_balance=result.balance + amount
+        )
+
+    async def get_history_warnings(
+        self, before: list[AccountHistoryChange], after: list[AccountHistoryChange]
+    ) -> list[AccountHistoryWarning]:
+        warnings: list[AccountHistoryWarning] = []
+        account_ids = {
+            item.account_id for item in before + after if item.account_id is not None
+        }
+        for account_id in sorted(account_ids):
+            account = await self._accounts.get_by_id(account_id)
+            if account is None:
+                raise AccountNotFoundError(account_id)
+            opening = occurred_at_from_storage(account.opening_balance_at)
+            for adjustment in await self._accounts.get_active_adjustments(account_id):
+                cutoff = occurred_at_from_storage(adjustment.occurred_at)
+                difference = sum(
+                    (
+                        sign * item.amount
+                        for sign, items in ((-1, before), (1, after))
+                        for item in items
+                        if item.account_id == account_id
+                        and opening
+                        < occurred_at_from_storage(item.occurred_at)
+                        <= cutoff
+                    ),
+                    Decimal("0.00"),
+                )
+                if difference != 0:
+                    warnings.append(
+                        AccountHistoryWarning(
+                            account_id=account_id,
+                            account_name=account.name,
+                            adjustment_id=adjustment.id,
+                            amount=adjustment.amount,
+                            currency_code=adjustment.currency_code,
+                            occurred_at=cutoff,
+                        )
+                    )
+        return warnings
 
     async def require_account(
         self, account_id: int | None, currency_code: str
