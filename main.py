@@ -19,6 +19,7 @@ from services.exceptions import ServiceError
 from services.expense_transaction_service import ExpenseTransactionService
 from services.incoming_transaction_service import IncomingTransactionService
 from services.report_service import ReportService
+from services.savings_goal_service import SavingsGoalService
 from services.transfer_transaction_service import TransferTransactionService
 from settings import settings
 from storage.db import async_session_factory, engine
@@ -37,6 +38,10 @@ from storage.repositories.incoming_transaction_repository import (
     IncomingTransactionRepository,
 )
 from storage.repositories.report_repository import ReportRepository
+from storage.repositories.savings_goal_allocation_repository import (
+    SavingsGoalAllocationRepository,
+)
+from storage.repositories.savings_goal_repository import SavingsGoalRepository
 from storage.repositories.transfer_transaction_repository import (
     TransferTransactionRepository,
 )
@@ -96,6 +101,13 @@ async def run_console() -> None:
             ),
             report_service=ReportService(
                 session, ReportRepository(session), account_service
+            ),
+            savings_goal_service=SavingsGoalService(
+                session,
+                SavingsGoalRepository(session),
+                SavingsGoalAllocationRepository(session),
+                currency_repository,
+                AccountRepository(session),
             ),
             transfer_service=TransferTransactionService(
                 session, TransferTransactionRepository(session), account_service

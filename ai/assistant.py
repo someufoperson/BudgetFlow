@@ -1,7 +1,7 @@
 import asyncio
 import json
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from hashlib import sha256
 
 from pydantic import ValidationError
@@ -11,6 +11,7 @@ from ai.client import AIClient
 from ai.memory import ConversationMemory, ScreenshotState, TransactionState
 from ai.models import (
     AIResponseType,
+    AllocateSavingsGoalResponse,
     AssignAccountTransactionsResponse,
     ClarifyResponse,
     ConfirmAssignAccountTransactionsResponse,
@@ -24,6 +25,7 @@ from ai.models import (
     CreateCategoryResponse,
     CreateCurrencyResponse,
     CreateDebtResponse,
+    CreateSavingsGoalResponse,
     CreateTransactionResponse,
     CreateTransferTransactionResponse,
     DeleteDebtResponse,
@@ -37,11 +39,14 @@ from ai.models import (
     GetDebtResponse,
     GetDebtsResponse,
     GetReportResponse,
+    GetSavingsGoalResponse,
+    GetSavingsGoalsResponse,
     GetTransferTransactionResponse,
     GetTransferTransactionsResponse,
     IncomingTransactionItem,
     MoreTransactionsResponse,
     ReconcileAccountResponse,
+    ReleaseSavingsGoalResponse,
     ReverseBalanceAdjustmentResponse,
     SearchTransactionArguments,
     SearchTransactionsResponse,
@@ -51,13 +56,19 @@ from ai.models import (
     UpdateAccountResponse,
     UpdateCategoryResponse,
     UpdateDebtResponse,
+    UpdateSavingsGoalResponse,
     UpdateScreenshotTransactionResponse,
     UpdateTransactionResponse,
     UpdateTransferTransactionResponse,
     ai_response_adapter,
 )
-from ai.prompts import ACCOUNT_PROMPT, DEBT_PROMPT, build_system_prompt
-from domain.enums import AccountType, CategoryType, DebtDirection
+from ai.prompts import (
+    ACCOUNT_PROMPT,
+    DEBT_PROMPT,
+    SAVINGS_GOAL_PROMPT,
+    build_system_prompt,
+)
+from domain.enums import AccountType, CategoryType, DebtDirection, SavingsGoalStatus
 from schemas.account import (
     AccountBalanceChangeResult,
     AccountHistoryWarning,
@@ -95,6 +106,7 @@ from schemas.incoming_transaction import (
     IncomingTransactionResult,
     UpdateIncomingTransactionCommand,
 )
+from schemas.savings_goal import GetAllSavingsGoalsCommand, SavingsGoalResult
 from schemas.transaction import TransactionSnapshot
 from schemas.transfer_transaction import (
     DeleteTransferTransactionCommand,
@@ -121,6 +133,7 @@ from services.expense_transaction_service import ExpenseTransactionService
 from services.incoming_transaction_service import IncomingTransactionService
 from services.report_image_service import ReportImageService
 from services.report_service import ReportService
+from services.savings_goal_service import SavingsGoalService
 from services.transaction_time import resolve_occurred_at
 from services.transfer_transaction_service import TransferTransactionService
 from settings import settings
@@ -142,6 +155,7 @@ class Assistant:
         report_service: ReportService | None = None,
         transfer_service: TransferTransactionService | None = None,
         adjustment_service: BalanceAdjustmentService | None = None,
+        savings_goal_service: SavingsGoalService | None = None,
     ) -> None:
         self._client = client
         self._currency_service = currency_service
@@ -153,6 +167,7 @@ class Assistant:
         self._report_service = report_service
         self._transfer_service = transfer_service
         self._adjustment_service = adjustment_service
+        self._savings_goal_service = savings_goal_service
         self.report_images: list[DocumentInput] = []
         self._screenshots = (
             memory.screenshots if memory is not None else ScreenshotState()
@@ -248,6 +263,15 @@ class Assistant:
             pending_debt = self._transactions.pending_debt_delete
             system_prompt += "\nPENDING_DEBT_DELETION: " + (
                 pending_debt.model_dump_json() if pending_debt is not None else "нет"
+            )
+
+        if self._savings_goal_service is not None:
+            goals = await self._savings_goal_service.get_all(
+                GetAllSavingsGoalsCommand()
+            )
+            system_prompt += SAVINGS_GOAL_PROMPT + json.dumps(
+                [goal.model_dump(mode="json", exclude={"history"}) for goal in goals],
+                ensure_ascii=False,
             )
 
         if self._screenshots.drafts:
@@ -435,6 +459,22 @@ class Assistant:
             self._transactions.pending_changes = None
             try:
                 answer = await self._handle_adjustment(response)
+            except ServiceError as error:
+                answer = f"⚠️ {error}"
+        elif isinstance(
+            response,
+            (
+                CreateSavingsGoalResponse,
+                GetSavingsGoalsResponse,
+                GetSavingsGoalResponse,
+                UpdateSavingsGoalResponse,
+                AllocateSavingsGoalResponse,
+                ReleaseSavingsGoalResponse,
+            ),
+        ):
+            self._transactions.pending_changes = None
+            try:
+                answer = await self._handle_savings_goal(response)
             except ServiceError as error:
                 answer = f"⚠️ {error}"
         elif isinstance(response, GetReportResponse):
@@ -1170,6 +1210,90 @@ class Assistant:
         if debt.description:
             lines.append(f"📝 {debt.description}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_savings_goal(goal: SavingsGoalResult, *, history: bool = False) -> str:
+        progress = goal.progress_percent.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        statuses = {
+            SavingsGoalStatus.ACTIVE: "Активна",
+            SavingsGoalStatus.PAUSED: "Приостановлена",
+            SavingsGoalStatus.ACHIEVED: "Достигнута по выделениям",
+        }
+        lines = [
+            f"🎯 {goal.name} · №{goal.id} · {statuses[goal.status]}",
+            f"Цель: {goal.target_amount:.2f} {goal.currency_code}",
+            (
+                f"Выделено: {goal.allocated_amount:.2f} {goal.currency_code} "
+                f"({progress:.2f}%)"
+            ),
+            f"Осталось: {goal.remaining_amount:.2f} {goal.currency_code}",
+            f"Приоритет: {goal.priority}/5",
+            f"Срок: {goal.due_date:%d.%m.%Y}" if goal.due_date else "Срок не задан",
+        ]
+        if goal.is_overdue:
+            lines.append("⏰ Срок достижения истёк")
+        for account in goal.accounts:
+            lines.append(
+                f"Счёт «{account.account_name}» · №{account.account_id}: "
+                f"выделено {account.allocated_amount:.2f} {goal.currency_code}; "
+                f"баланс {account.balance:.2f}; всего выделено {account.total_allocated_amount:.2f}; "
+                f"доступно {account.available_amount:.2f}"
+                + (" · деактивирован" if not account.is_active else "")
+            )
+            if account.shortfall_amount > 0:
+                lines.append(
+                    f"⚠️ Нехватка покрытия всех выделений счёта: "
+                    f"{account.shortfall_amount:.2f} {goal.currency_code}. "
+                    "Обеспеченность этой цели не гарантирована. Пересмотрите выделения."
+                )
+        if history:
+            lines.append("История выделений и освобождений:")
+            if not goal.history:
+                lines.append("Записей нет.")
+            for item in goal.history:
+                timestamp = item.created_at.astimezone(settings.timezone_info)
+                lines.append(
+                    f"№{item.id} · {timestamp:%d.%m.%Y %H:%M:%S} · "
+                    f"{item.account_name} (счёт №{item.account_id}): "
+                    f"{item.amount:+.2f} {goal.currency_code}"
+                )
+        return "\n".join(lines)
+
+    async def _handle_savings_goal(
+        self,
+        response: CreateSavingsGoalResponse
+        | GetSavingsGoalsResponse
+        | GetSavingsGoalResponse
+        | UpdateSavingsGoalResponse
+        | AllocateSavingsGoalResponse
+        | ReleaseSavingsGoalResponse,
+    ) -> str:
+        service = self._savings_goal_service
+        if service is None:
+            return "⚠️ Цели накопления недоступны."
+        if isinstance(response, GetSavingsGoalsResponse):
+            goals = await service.get_all(response.arguments)
+            return (
+                "\n\n".join(self._format_savings_goal(goal) for goal in goals)
+                or "Целей пока нет."
+            )
+        if isinstance(response, GetSavingsGoalResponse):
+            return self._format_savings_goal(
+                await service.get_by_id(response.arguments), history=True
+            )
+        if isinstance(response, CreateSavingsGoalResponse):
+            goal = await service.create(response.arguments)
+            message = "✅ Цель создана."
+        elif isinstance(response, UpdateSavingsGoalResponse):
+            goal = await service.update(response.arguments)
+            message = "✏️ Цель обновлена."
+        elif isinstance(response, AllocateSavingsGoalResponse):
+            goal = await service.allocate(response.arguments)
+            message = "✅ Деньги выделены на цель. Баланс счёта не изменён."
+        else:
+            goal = await service.release(response.arguments)
+            message = "✅ Деньги освобождены. Баланс счёта не изменён."
+        return message + "\n" + self._format_savings_goal(goal)
 
     async def _handle_debt(
         self,

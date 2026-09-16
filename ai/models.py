@@ -35,6 +35,14 @@ from schemas.document import ScreenshotTransactionDraft
 from schemas.expense_transaction import CreateExpenseTransactionCommand
 from schemas.incoming_transaction import CreateIncomingTransactionCommand
 from schemas.report import GetReportCommand
+from schemas.savings_goal import (
+    AllocateSavingsGoalCommand,
+    CreateSavingsGoalCommand,
+    GetAllSavingsGoalsCommand,
+    GetSavingsGoalByIdCommand,
+    ReleaseSavingsGoalCommand,
+    UpdateSavingsGoalCommand,
+)
 from schemas.transaction import TransactionChanges, TransactionFilters
 from schemas.transfer_transaction import (
     CreateTransferTransactionCommand,
@@ -51,6 +59,36 @@ class AIResponse(BaseModel):
 class CreateCurrencyResponse(AIResponse):
     action: Literal["create_currency"]
     arguments: CreateCurrencyCommand
+
+
+class CreateSavingsGoalResponse(AIResponse):
+    action: Literal["create_savings_goal"]
+    arguments: CreateSavingsGoalCommand
+
+
+class GetSavingsGoalsResponse(AIResponse):
+    action: Literal["get_savings_goals"]
+    arguments: GetAllSavingsGoalsCommand
+
+
+class GetSavingsGoalResponse(AIResponse):
+    action: Literal["get_savings_goal"]
+    arguments: GetSavingsGoalByIdCommand
+
+
+class UpdateSavingsGoalResponse(AIResponse):
+    action: Literal["update_savings_goal"]
+    arguments: UpdateSavingsGoalCommand
+
+
+class AllocateSavingsGoalResponse(AIResponse):
+    action: Literal["allocate_savings_goal"]
+    arguments: AllocateSavingsGoalCommand
+
+
+class ReleaseSavingsGoalResponse(AIResponse):
+    action: Literal["release_savings_goal"]
+    arguments: ReleaseSavingsGoalCommand
 
 
 class CreateTransferTransactionResponse(AIResponse):
@@ -361,6 +399,12 @@ class ConfirmDeleteTransactionResponse(AIResponse):
 
 AIResponseType = Annotated[
     CreateCurrencyResponse
+    | CreateSavingsGoalResponse
+    | GetSavingsGoalsResponse
+    | GetSavingsGoalResponse
+    | UpdateSavingsGoalResponse
+    | AllocateSavingsGoalResponse
+    | ReleaseSavingsGoalResponse
     | CreateTransferTransactionResponse
     | GetTransferTransactionsResponse
     | GetTransferTransactionResponse

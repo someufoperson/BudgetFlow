@@ -27,6 +27,7 @@ ___
 11. Recording same-currency transfers between your accounts, viewing and editing them, and deleting mistaken records after confirmation
 12. Reconciling current account balances and applying separate balance adjustments after confirmation, with optional explanations
 13. Cancelling mistaken adjustments through linked reversing entries, and warnings when restored transaction history overlaps an active adjustment
+14. Savings goals with explicit account allocations, release history, progress, and account shortfall warnings
 
 Reminders, debt repayment planning, and purchase recommendations are not available yet. A credit limit is stored as account information; it does not increase the account balance or count as income.
 
@@ -36,8 +37,63 @@ ___
 
 - [ ] 👾 User interface: a web interface for transactions, budget expectations, and debt obligations, along with a richer conversational CLI
 - [ ] 🤖 AI: analysis of income and expenses, purchase recommendations, and support for building and maintaining a budget strategy
-- [ ] 👤 Personalization: user preferences, savings goals, expected income and expenses, and configurable reminders
+- [ ] 👤 Personalization: user preferences, expected income and expenses, and configurable reminders
 - [ ] 💰 Budget: debt repayment planning, deposit interest, and support for other financial instruments
+
+**Savings goals**
+
+Goals are available through the existing console and MAX conversation. For example:
+
+- «Создай цель: отпуск, 100 000 рублей, до 1 июля 2027 года».
+- «Выдели на отпуск 20 000 рублей со счёта Накопительный».
+- «Покажи мои цели» or «Покажи подробности и историю цели Отпуск».
+- «Освободи 5 000 рублей из цели Отпуск на счёте Накопительный».
+- «Измени сумму цели Отпуск на 120 000 рублей», «Убери срок цели Отпуск».
+- «Приостанови цель Отпуск», «Возобнови цель Отпуск».
+
+Allocations designate existing account money; they do not create income, expenses,
+transfers, or bank operations. With a 50,000 RUB balance and a 20,000 RUB allocation,
+30,000 RUB remains available for other allocations. Releasing 5,000 RUB leaves
+15,000 RUB allocated and 35,000 RUB available; the account balance stays 50,000 RUB.
+Each change is retained in the goal's history, including its account and timestamp.
+
+A goal can use several accounts, and an account can fund several goals, in the same
+currency. New allocations require an explicitly selected active account and cannot
+exceed either its balance minus all existing allocations or the goal's remaining
+amount. Credit limits do not add available money. Releases work on inactive accounts
+and cannot exceed that account's allocation. When several sources exist, specify the
+account. Ambiguous goal/account names require clarification by number.
+
+Priority is 1–5 (default 3; higher is more important), matching debt cards. Goals
+start active and become achieved when fully allocated. Releasing money or increasing
+the target reactivates an achieved goal. Pausing an unfinished goal retains its
+allocations and prevents new ones; releases remain possible. Resuming makes it active.
+Reducing a paused goal's target to its allocated amount makes it achieved. Achieved
+goals cannot be paused. Targets cannot be reduced below the allocated amount, and
+currency cannot be changed. A missed deadline is displayed without closing the goal.
+Displayed progress is rounded down to two decimal places, so 100% appears only when
+the full target amount has been allocated.
+
+Expenses, transfers and balance corrections remain available. If a 40,000 RUB
+allocation is backed by only a 30,000 RUB balance, the goal shows a 10,000 RUB account
+shortfall and zero availability. Allocations are not reduced or moved automatically.
+For a negative balance, the full allocated amount is uncovered; the negative balance
+is shown separately. Warnings apply to all goals linked to an underfunded account,
+without assigning the shortfall to a particular goal. “Achieved” describes allocations,
+not guaranteed funding. Goals are not added to account totals in financial reports.
+
+New goal amounts are stored as integer hundredths; Python calculations use Decimal.
+Amounts support at most two decimal places and 16 whole digits, including for crypto
+currencies. AI actions pass amounts as decimal strings. Existing account balance
+storage/calculation is unchanged and retains its current precision limitations.
+SQLite write transactions serialize allocation checks and updates, including concurrent
+requests. Reads use a consistent snapshot. No automatic retry repeats a money allocation.
+
+Migration `e1a4c7f0b293` follows `b8e3f6a9c142` and creates `savings_goals` and
+`savings_goal_allocations`; normal application startup applies it through Alembic.
+Downgrade is refused while either table contains data. Goal deletion, purchases directly
+from a goal, currency conversion, recurring/automatic allocations and savings advice
+are outside this version.
 - [ ] 🔐 Security: stronger protection of locally stored data and masking of sensitive information when using external AI providers
 
 ___

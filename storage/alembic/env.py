@@ -13,6 +13,8 @@ import storage.models.currency
 import storage.models.debt
 import storage.models.expense_transaction
 import storage.models.incoming_transaction
+import storage.models.savings_goal
+import storage.models.savings_goal_allocation
 import storage.models.transfer_transaction  # noqa: F401
 from settings import settings
 from storage.models.base import Base

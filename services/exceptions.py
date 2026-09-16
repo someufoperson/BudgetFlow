@@ -61,6 +61,12 @@ class DebtNotFoundError(ServiceError):
         self.debt_id = debt_id
 
 
+class SavingsGoalNotFoundError(ServiceError):
+    def __init__(self, goal_id: int) -> None:
+        super().__init__(f"Цель {goal_id} не найдена.")
+        self.goal_id = goal_id
+
+
 class DebtChangedError(ServiceError):
     def __init__(self) -> None:
         super().__init__(

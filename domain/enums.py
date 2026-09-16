@@ -16,6 +16,12 @@ class DebtDirection(StrEnum):
     RECEIVABLE = "RECEIVABLE"
 
 
+class SavingsGoalStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    PAUSED = "PAUSED"
+    ACHIEVED = "ACHIEVED"
+
+
 class CategoryType(StrEnum):
     expense = "EXPENSE"
     income = "INCOME"
