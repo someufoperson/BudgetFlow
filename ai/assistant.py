@@ -1,14 +1,17 @@
 import asyncio
 import json
+import logging
 from datetime import datetime
 from decimal import ROUND_DOWN, Decimal
 from hashlib import sha256
+from itertools import count
 
 from pydantic import ValidationError
+from requests import RequestException
 from sqlalchemy.exc import SQLAlchemyError
 
-from ai.client import AIClient
-from ai.memory import ConversationMemory, ScreenshotState, TransactionState
+from ai.client import AIClient, request_context
+from ai.memory import ConversationMemory, ScreenshotState, TaskState, TransactionState
 from ai.models import (
     AIResponseType,
     AllocateSavingsGoalResponse,
@@ -45,10 +48,13 @@ from ai.models import (
     GetTransferTransactionResponse,
     GetTransferTransactionsResponse,
     IncomingTransactionItem,
+    InterpretResponse,
     MoreTransactionsResponse,
     ReconcileAccountResponse,
     ReleaseSavingsGoalResponse,
     ReverseBalanceAdjustmentResponse,
+    RouteResponse,
+    Scenario,
     SearchTransactionArguments,
     SearchTransactionsResponse,
     SelectTransactionResponse,
@@ -64,9 +70,8 @@ from ai.models import (
     ai_response_adapter,
 )
 from ai.prompts import (
-    ACCOUNT_PROMPT,
-    DEBT_PROMPT,
-    SAVINGS_GOAL_PROMPT,
+    DEBT_INCOME_PROMPT,
+    ROUTER_PROMPT,
     build_system_prompt,
 )
 from domain.enums import AccountType, CategoryType, DebtDirection, SavingsGoalStatus
@@ -107,6 +112,7 @@ from schemas.incoming_transaction import (
     IncomingTransactionResult,
     UpdateIncomingTransactionCommand,
 )
+from schemas.report import GetReportCommand
 from schemas.savings_goal import GetAllSavingsGoalsCommand, SavingsGoalResult
 from schemas.transaction import TransactionSnapshot
 from schemas.transfer_transaction import (
@@ -140,6 +146,9 @@ from services.transfer_transaction_service import TransferTransactionService
 from settings import settings
 
 type TransactionResult = ExpenseTransactionResult | IncomingTransactionResult
+
+logger = logging.getLogger(__name__)
+_request_numbers = count(1)
 
 
 class Assistant:
@@ -177,187 +186,514 @@ class Assistant:
         self._transactions = (
             memory.transactions if memory is not None else TransactionState()
         )
+        self._dialog = memory if memory is not None else ConversationMemory(0)
+        self._dialog.transactions = self._transactions
+        self._dialog.screenshots = self._screenshots
+        self._last_response: AIResponseType | None = None
+        self._command_failed = False
+        self._handling_message = False
+        self._clarification_pending = False
 
-    async def interpret(
-        self,
-        user_message: str,
-    ) -> AIResponseType:
-        categories = await self._category_service.get_all(
-            GetAllCategoriesCommand(),
-        )
-        system_prompt = build_system_prompt(categories)
-        system_prompt += (
-            "\nСоздание и ведение банковских кредитных обязательств, импорт договоров "
-            "и графиков платежей отключены. На такие запросы объясни это через text; "
-            "не заменяй банковскую карточку созданием долга или счёта. Реестр долгов "
-            "перед людьми и явно запрошенные кредитные счета с лимитом доступны."
-        )
-        system_prompt += self._transaction_context()
-        system_prompt += "\nПОКАЗАННЫЕ ПЕРЕВОДЫ: " + json.dumps(
-            [
-                self._format_transfer(item)
-                for item in self._transactions.transfers.values()
-            ],
-            ensure_ascii=False,
-        )
-        pending_transfer = self._transactions.pending_transfer_delete
-        transfer_filters = self._transactions.transfer_filters
-        adjustment_filters = self._transactions.adjustment_filters
-        system_prompt += "\nПОСЛЕДНЯЯ СТРАНИЦА ПЕРЕВОДОВ: " + (
-            transfer_filters.model_dump_json()
-            if transfer_filters is not None
-            else "нет"
-        )
-        system_prompt += "\nПОСЛЕДНЯЯ СТРАНИЦА КОРРЕКТИРОВОК: " + (
-            adjustment_filters.model_dump_json()
-            if adjustment_filters is not None
-            else "нет"
-        )
-        system_prompt += "\nУДАЛЕНИЕ ПЕРЕВОДА ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ: " + (
-            self._transfer_deletion_confirmation(pending_transfer)
-            if pending_transfer is not None
-            else "нет"
-        )
-        reconciliation = self._transactions.reconciliation
-        system_prompt += "\nПОСЛЕДНЯЯ СВЕРКА: " + (
-            self._format_reconciliation(reconciliation)
-            if reconciliation is not None
-            else "нет"
-        )
-        pending_adjustment = self._transactions.pending_adjustment
-        system_prompt += "\nКОРРЕКТИРОВКА ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ: " + (
-            self._adjustment_confirmation(
-                pending_adjustment.expected, pending_adjustment.description
+    def _confirmation_candidates(self) -> dict[str, str]:
+        state = self._transactions
+        candidates: dict[str, str] = {}
+        proposals = {
+            "confirm_delete_transaction": state.pending_delete,
+            "confirm_delete_debt": state.pending_debt_delete,
+            "confirm_delete_transfer_transaction": state.pending_transfer_delete,
+            "confirm_balance_adjustment": state.pending_adjustment,
+            "confirm_reverse_balance_adjustment": state.pending_reversal,
+            "debt_income": state.pending_debt_income,
+        }
+        for action, proposal in proposals.items():
+            if proposal is not None:
+                candidates[action] = proposal.model_dump_json()
+        if state.pending_account_id is not None:
+            candidates["confirm_assign_account_transactions"] = str(
+                state.pending_account_id
             )
-            if pending_adjustment is not None
-            else "нет"
-        )
-        pending_reversal = self._transactions.pending_reversal
-        system_prompt += "\nОТМЕНА КОРРЕКТИРОВКИ ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ: " + (
-            self._reversal_confirmation(pending_reversal)
-            if pending_reversal is not None
-            else "нет"
-        )
-        if self._account_service is not None:
-            accounts = await self._account_service.get_all(
-                GetAllAccountsCommand(include_inactive=True)
+        if self._screenshots.ready and self._screenshots.drafts:
+            candidates["confirm_screenshot_transactions"] = "|".join(
+                item.model_dump_json() for item in self._screenshots.drafts
             )
-            system_prompt += (
-                ACCOUNT_PROMPT
-                + "\n"
-                + json.dumps(
-                    [account.model_dump(mode="json") for account in accounts],
-                    ensure_ascii=False,
+        return {
+            action: sha256(content.encode()).hexdigest()
+            for action, content in candidates.items()
+        }
+
+    def _invalidate_confirmation(self) -> None:
+        self._dialog.confirmation = None
+        state = self._transactions
+        state.pending_delete = None
+        state.choosing_delete = False
+        state.pending_debt_delete = None
+        state.pending_debt_income = None
+        state.pending_transfer_delete = None
+        state.pending_adjustment = None
+        state.pending_reversal = None
+        state.pending_account_id = None
+        self._screenshots.ready = False
+
+    async def interpret(self, user_message: str) -> AIResponseType:
+        self._clarification_pending = False
+        dialog = self._dialog
+        text = user_message.strip().casefold().rstrip(".!?")
+        candidates = self._confirmation_candidates()
+        confirmation = dialog.confirmation
+        simple_agreement = text in {"да", "нет", "подтверждаю", "всё верно", "сохраняй"}
+        active_task = (
+            dialog.tasks.get(dialog.active_scenario)
+            if dialog.active_scenario is not None
+            else None
+        )
+        if (
+            simple_agreement
+            and not candidates
+            and active_task is not None
+            and active_task.awaiting_answer
+            and dialog.active_scenario is not None
+        ):
+            route = RouteResponse(scenario=dialog.active_scenario, continuation=True)
+        elif simple_agreement:
+            if (
+                confirmation is None
+                or len(candidates) != 1
+                or candidates.get(confirmation[0]) != confirmation[1]
+            ):
+                self._invalidate_confirmation()
+                return ClarifyResponse(
+                    action="clarify",
+                    message="Уточните, какое действие нужно выполнить; прежнее предложение нужно показать заново.",
                 )
-            )
-            system_prompt += (
-                f"\nPENDING_ACCOUNT_ASSIGNMENT: {self._transactions.pending_account_id}"
-            )
-
-        if self._debt_service is not None:
-            debts = await self._debt_service.get_all(
-                GetAllDebtsCommand(include_repaid=True)
-            )
-            system_prompt += DEBT_PROMPT + json.dumps(
-                [debt.model_dump(mode="json") for debt in debts], ensure_ascii=False
-            )
-            pending_debt = self._transactions.pending_debt_delete
-            system_prompt += "\nPENDING_DEBT_DELETION: " + (
-                pending_debt.model_dump_json() if pending_debt is not None else "нет"
-            )
-            pending_income = self._transactions.pending_debt_income
-            system_prompt += "\nPENDING_DEBT_INCOME: " + (
-                pending_income.model_dump_json()
-                if pending_income is not None
-                else "нет"
-            )
-            system_prompt += (
-                "\nЕсли PENDING_DEBT_INCOME содержит долг, приложение предложило "
-                "отдельно записать получение денег. При согласии используй "
-                "create_transactions с income, суммой и валютой предложения, "
-                "счётом по умолчанию либо явно выбранным пользователем счётом. "
-                "Выбирай существующую доходную категорию по смыслу «Взял в долг». "
-                "Если подходящей категории нет, предложи создать её или выбрать другую. "
-                "Не создавай категорию без согласия. Учти исправления суммы, даты, "
-                "счёта и категории. Дата актуальности долга не является датой получения: "
-                "для исторического долга уточни дату и полученную сумму. "
-                "Отказ — respond без создания транзакции. Не создавай долг повторно."
-            )
-
-        if self._savings_goal_service is not None:
-            goals = await self._savings_goal_service.get_all(
-                GetAllSavingsGoalsCommand()
-            )
-            system_prompt += SAVINGS_GOAL_PROMPT + json.dumps(
-                [goal.model_dump(mode="json", exclude={"history"}) for goal in goals],
-                ensure_ascii=False,
-            )
-
-        if self._screenshots.drafts:
-            system_prompt += (
-                "\nТЕКУЩИЙ ИМПОРТ СКРИНШОТОВ. "
-                + (
-                    "Приложение уже показало пользователю готовый список ниже и спросило: "
-                    "«Добавить эти операции?». Сейчас ожидается его подтверждение или исправления. "
-                    "Согласие без исправлений относится к этому списку: верни "
-                    "confirm_screenshot_transactions с confirmed:true, не спрашивай повторно, "
-                    "какую операцию сохранить и что нужно сделать. "
-                    "Это актуальное ожидание, даже если история сообщений пуста. "
-                    if self._screenshots.ready
-                    else "Список пока не готов к сохранению: нужны уточнения или повторный показ. "
+            if confirmation[0] != "debt_income":
+                return ai_response_adapter.validate_python(
+                    {"action": confirmation[0], "confirmed": text != "нет"}
                 )
-                + "Если пользователь обсуждает другое действие, не принимай согласие "
-                "с ним за разрешение сохранить скриншоты. "
-                "\nЧЕРНОВИКИ ОПЕРАЦИЙ СО СКРИНШОТОВ (нумерация с 1): "
-                + json.dumps(
-                    [item.model_dump(mode="json") for item in self._screenshots.drafts],
-                    ensure_ascii=False,
+            if text == "нет":
+                self._invalidate_confirmation()
+                return TextResponse(
+                    action="respond", message="Получение денег не записано."
                 )
-                + "\nУточнения пользователя вноси только через "
-                '{"action":"update_screenshot_transaction","selection":1,"changes":{...}}. '
-                "changes содержит только явно изменённые поля. Для исключения строки: "
-                '{"action":"skip_screenshot_transaction","selection":1}. '
-                "После исключения нумерация меняется. Не вызывай create_transactions "
-                "для этих черновиков. При согласии сохранить показанный список верни "
-                '{"action":"confirm_screenshot_transactions","confirmed":true}. '
-                "При отказе от импорта верни тот же action с confirmed:false. "
-                "Принимай подтверждение по смыслу, не требуй точной фразы. "
-                "Если есть исправления, сначала внеси их, не подтверждай старый список. "
-                "«отмена скриншотов» отменяет импорт; «продолжить скриншоты» показывает список. "
-                "Не выдумывай дату, время, направление или статус. Суммы в строках. "
-                "Переводы между своими счетами не поддерживаются. Поля черновика: "
+            route = RouteResponse(scenario="transactions", continuation=True)
+        elif text == "теперь картинкой" and dialog.last_report is not None:
+            self._invalidate_confirmation()
+            dialog.active_scenario = "reports"
+            return GetReportResponse(
+                action="get_report",
+                arguments=dialog.last_report.model_copy(update={"format": "image"}),
+            )
+        else:
+            context = {
+                "active_scenario": dialog.active_scenario,
+                "tasks": {
+                    name: {
+                        "question": task.question[:300],
+                        "request": task.request[:300],
+                        "missing_fields": task.draft.missing_fields,
+                    }
+                    for name, task in dialog.tasks.items()
+                },
+                "confirmation": confirmation[0] if confirmation else None,
+                "screenshots": bool(self._screenshots.drafts),
+                "last_report": dialog.last_report is not None,
+            }
+            routing_prompt = (
+                ROUTER_PROMPT
+                + "\nСОСТОЯНИЕ: "
+                + json.dumps(context, ensure_ascii=False)
+            )
+            if self._memory is None:
+                raw_route = await asyncio.to_thread(
+                    self._client.complete, routing_prompt, user_message
+                )
+            else:
+                raw_route = await asyncio.to_thread(
+                    self._client.complete,
+                    routing_prompt,
+                    user_message,
+                    self._memory.messages(max_bytes=2400),
+                )
+            try:
+                route = RouteResponse.model_validate_json(raw_route)
+            except ValidationError:
+                route = RouteResponse(scenario=None, continuation=False)
+        scenario = route.scenario
+        if scenario is None:
+            self._invalidate_confirmation()
+            return ClarifyResponse(
+                action="clarify",
+                message="Уточните одно действие: записать операцию, найти её, показать отчёт или работать со счетами, долгами, целями либо скриншотами?",
+            )
+        income_continuation = (
+            scenario == "transactions"
+            and confirmation is not None
+            and confirmation[0] == "debt_income"
+            and route.continuation
+        )
+        if (
+            not route.continuation or scenario != dialog.active_scenario
+        ) and not income_continuation:
+            self._invalidate_confirmation()
+        income_task = dialog.tasks.pop("debts", None) if income_continuation else None
+        dialog.active_scenario = scenario
+        if not route.continuation or scenario not in dialog.tasks:
+            dialog.tasks[scenario] = TaskState(
+                request=user_message,
+                started_turn=(
+                    income_task.started_turn
+                    if income_task is not None
+                    else request_context.get()
+                ),
+            )
+        task = dialog.tasks[scenario]
+        categories = (
+            await self._category_service.get_all(GetAllCategoriesCommand())
+            if scenario in {"transactions", "search", "screenshots"}
+            else []
+        )
+        system_prompt = build_system_prompt(categories, scenario=scenario)
+        if (
+            scenario == "transactions"
+            and self._transactions.pending_debt_income is not None
+        ):
+            # Keep constant instructions before all dynamic context.
+            system_prompt = DEBT_INCOME_PROMPT + "\n" + system_prompt
+        if scenario == "screenshots":
+            system_prompt = (
+                "Схема строки черновика: "
                 + json.dumps(
                     ScreenshotTransactionDraft.model_json_schema(), ensure_ascii=False
                 )
+                + "\n"
+                + system_prompt
             )
-
+        system_prompt += await self._scenario_context(scenario)
+        system_prompt += "\nНЕЗАВЕРШЁННАЯ ЗАДАЧА: " + json.dumps(
+            {
+                "request": task.request,
+                "draft": task.draft.model_dump(mode="json"),
+                "question": task.question,
+                "result": task.result,
+            },
+            ensure_ascii=False,
+        )
         if self._memory is None:
             raw_response = await asyncio.to_thread(
-                self._client.complete,
-                system_prompt,
-                user_message,
+                self._client.complete, system_prompt, user_message
             )
         else:
             raw_response = await asyncio.to_thread(
                 self._client.complete,
                 system_prompt,
                 user_message,
-                self._memory.messages(),
+                self._memory.messages(scenario=scenario),
             )
-
+        previous_draft = task.draft
         try:
-            return ai_response_adapter.validate_json(raw_response)
-        except ValidationError:
-            if not self._screenshots.drafts:
-                print(f"Некорректный ответ AI: {raw_response!r}", flush=True)
+            try:
+                interpreted = InterpretResponse.model_validate_json(raw_response)
+            except ValidationError:
+                response = ai_response_adapter.validate_json(raw_response)
+                if task.request != user_message:
+                    task.request += "\n" + user_message
             else:
-                print(
-                    "Некорректный ответ AI; содержимое скриншотов не записано в лог.",
-                    flush=True,
+                if len(interpreted.draft.model_dump_json().encode()) > 16000:
+                    raise ValueError("Task draft exceeds context budget")
+                task.draft = interpreted.draft
+                response = interpreted.response
+        except (ValidationError, ValueError):
+            self._invalidate_confirmation()
+            return ClarifyResponse(
+                action="clarify",
+                message="Не удалось надёжно разобрать запрос. Уточните действие и его параметры.",
+            )
+        allowed: dict[Scenario, set[str]] = {
+            "transactions": {
+                "create_transactions",
+                "create_category",
+                "update_category",
+                "create_currency",
+            },
+            "search": {
+                "search_transactions",
+                "more_transactions",
+                "select_transaction",
+                "update_transaction",
+                "delete_transaction",
+                "confirm_delete_transaction",
+            },
+            "accounts": {
+                "create_account",
+                "update_account",
+                "get_accounts",
+                "get_account",
+                "assign_account_transactions",
+                "confirm_assign_account_transactions",
+            },
+            "transfers": {
+                "create_transfer_transaction",
+                "get_transfer_transactions",
+                "get_transfer_transaction",
+                "update_transfer_transaction",
+                "delete_transfer_transaction",
+                "confirm_delete_transfer_transaction",
+                "reconcile_account",
+                "create_balance_adjustment",
+                "confirm_balance_adjustment",
+                "get_balance_adjustments",
+                "get_balance_adjustment",
+                "reverse_balance_adjustment",
+                "confirm_reverse_balance_adjustment",
+            },
+            "debts": {
+                "create_debt",
+                "update_debt",
+                "get_debts",
+                "get_debt",
+                "delete_debt",
+                "confirm_delete_debt",
+            },
+            "goals": {
+                "create_savings_goal",
+                "update_savings_goal",
+                "get_savings_goals",
+                "get_savings_goal",
+                "allocate_savings_goal",
+                "release_savings_goal",
+            },
+            "reports": {"get_report"},
+            "screenshots": {
+                "update_screenshot_transaction",
+                "skip_screenshot_transaction",
+                "confirm_screenshot_transactions",
+            },
+            "general": set(),
+        }
+        if response.action not in allowed[scenario] | {"clarify", "respond"}:
+            self._invalidate_confirmation()
+            return ClarifyResponse(
+                action="clarify",
+                message="Уточните одно действие, которое нужно выполнить.",
+            )
+        if response.action.startswith("confirm_"):
+            current = self._confirmation_candidates()
+            if current and (
+                dialog.confirmation is None
+                or len(current) != 1
+                or task.draft != previous_draft
+                or dialog.confirmation
+                != (response.action, current.get(response.action))
+            ):
+                self._invalidate_confirmation()
+                return ClarifyResponse(
+                    action="clarify",
+                    message="Предложение изменилось или устарело. Сначала запросите его повторный показ.",
                 )
-            raise
+        self._clarification_pending = isinstance(response, ClarifyResponse)
+        return response
 
-    async def handle_message(
+    async def _scenario_context(self, scenario: Scenario) -> str:
+        parts: list[str] = []
+        if scenario not in {"reports", "general"} and self._account_service is not None:
+            accounts = await self._account_service.get_all(
+                GetAllAccountsCommand(include_inactive=True)
+            )
+            parts.append(
+                "АКТУАЛЬНЫЕ СЧЕТА: "
+                + json.dumps(
+                    [
+                        account.model_dump(
+                            mode="json",
+                            include={
+                                "id",
+                                "name",
+                                "currency_code",
+                                "is_active",
+                                "is_default",
+                                "account_type",
+                                "credit_limit",
+                            },
+                        )
+                        for account in accounts
+                    ],
+                    ensure_ascii=False,
+                )
+            )
+        if scenario == "search":
+            parts.append(self._transaction_context())
+        if scenario == "accounts":
+            parts.append(
+                f"PENDING_ACCOUNT_ASSIGNMENT: {self._transactions.pending_account_id}"
+            )
+        if scenario == "transfers":
+            parts.append(
+                "ПОКАЗАННЫЕ ПЕРЕВОДЫ: "
+                + json.dumps(
+                    [
+                        self._format_transfer(item)
+                        for item in self._transactions.transfers.values()
+                    ],
+                    ensure_ascii=False,
+                )
+            )
+            state = self._transactions
+            for label, value in (
+                ("ПОСЛЕДНЯЯ СТРАНИЦА ПЕРЕВОДОВ", state.transfer_filters),
+                ("ПОСЛЕДНЯЯ СТРАНИЦА КОРРЕКТИРОВОК", state.adjustment_filters),
+                (
+                    "УДАЛЕНИЕ ПЕРЕВОДА ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ",
+                    state.pending_transfer_delete,
+                ),
+                ("ПОСЛЕДНЯЯ СВЕРКА", state.reconciliation),
+                ("КОРРЕКТИРОВКА ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ", state.pending_adjustment),
+                ("ОТМЕНА КОРРЕКТИРОВКИ ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ", state.pending_reversal),
+            ):
+                parts.append(
+                    label
+                    + ": "
+                    + (value.model_dump_json() if value is not None else "нет")
+                )
+        if scenario == "debts" and self._debt_service is not None:
+            debts = await self._debt_service.get_all(
+                GetAllDebtsCommand(include_repaid=True)
+            )
+            parts.append(
+                "АКТУАЛЬНЫЕ ДОЛГИ: "
+                + json.dumps(
+                    [
+                        debt.model_dump(
+                            mode="json", exclude={"created_at", "updated_at"}
+                        )
+                        for debt in debts
+                    ],
+                    ensure_ascii=False,
+                )
+            )
+            pending = self._transactions.pending_debt_delete
+            parts.append(
+                "PENDING_DEBT_DELETION: "
+                + (pending.model_dump_json() if pending else "нет")
+            )
+        if (
+            scenario == "transactions"
+            and self._transactions.pending_debt_income is not None
+        ):
+            parts.append(
+                "PENDING_DEBT_INCOME: "
+                + self._transactions.pending_debt_income.model_dump_json()
+            )
+        if scenario == "goals" and self._savings_goal_service is not None:
+            goals = await self._savings_goal_service.get_all(
+                GetAllSavingsGoalsCommand()
+            )
+            parts.append(
+                "АКТУАЛЬНЫЕ ЦЕЛИ: "
+                + json.dumps(
+                    [
+                        goal.model_dump(
+                            mode="json", exclude={"history", "created_at", "updated_at"}
+                        )
+                        for goal in goals
+                    ],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+        if scenario == "reports" and self._dialog.last_report is not None:
+            parts.append(
+                "ПОСЛЕДНИЙ ОТЧЁТ: " + self._dialog.last_report.model_dump_json()
+            )
+        if scenario == "screenshots":
+            parts.append(
+                "ЧЕРНОВИКИ ОПЕРАЦИЙ СО СКРИНШОТОВ: "
+                + json.dumps(
+                    [
+                        draft.model_dump(mode="json")
+                        for draft in self._screenshots.drafts
+                    ],
+                    ensure_ascii=False,
+                )
+            )
+            parts.append(f"Список готов: {self._screenshots.ready}")
+            if self._screenshots.ready:
+                parts.append("Сейчас ожидается его подтверждение или исправления")
+        return "\n" + "\n".join(parts)
+
+    async def handle_message(self, user_message: str) -> str:
+        self._last_response = None
+        self._command_failed = False
+        self._clarification_pending = False
+        self._handling_message = True
+        token = request_context.set(next(_request_numbers))
+        try:
+            try:
+                answer = await self._handle_message(user_message)
+            except (ServiceError, SQLAlchemyError, ValidationError, RequestException):
+                self._command_failed = True
+                self._remember_result(
+                    user_message,
+                    "Действие не завершено; перед повтором проверьте актуальные данные.",
+                )
+                self._invalidate_confirmation()
+                raise
+            self._remember_result(user_message, answer)
+            return answer
+        finally:
+            self._handling_message = False
+            request_context.reset(token)
+
+    def _remember_result(self, user_message: str, answer: str) -> None:
+        dialog = self._dialog
+        response = self._last_response
+        outcome = {
+            "command": response.model_dump(mode="json") if response else None,
+            "status": "failed" if self._command_failed else "handled",
+            "result": answer[:1600]
+            + ("… [результат сокращён]" if len(answer) > 1600 else ""),
+        }
+        if self._memory is not None:
+            self._memory.add(
+                user_message,
+                json.dumps(outcome, ensure_ascii=False),
+                scenario=dialog.active_scenario,
+            )
+        if dialog.active_scenario is not None:
+            task = dialog.tasks.setdefault(
+                dialog.active_scenario, TaskState(started_turn=request_context.get())
+            )
+            task.result = str(outcome["result"])
+            task.awaiting_answer = self._clarification_pending
+            completed = (
+                not self._command_failed
+                and not isinstance(response, ClarifyResponse)
+                and not (
+                    isinstance(response, CreateCategoryResponse)
+                    and (
+                        task.draft.missing_fields
+                        or "amount" in task.draft.fields
+                        or task.question
+                    )
+                )
+                and not self._confirmation_candidates()
+            )
+            logger.info(
+                "AI task turn=%s task=%s scenario=%s status=%s completed=%s",
+                request_context.get(),
+                task.started_turn,
+                dialog.active_scenario,
+                outcome["status"],
+                completed,
+            )
+            if isinstance(response, ClarifyResponse):
+                task.question = response.message
+            elif completed:
+                dialog.tasks.pop(dialog.active_scenario, None)
+        candidates = self._confirmation_candidates()
+        dialog.confirmation = (
+            next(iter(candidates.items())) if len(candidates) == 1 else None
+        )
+
+    async def _handle_message(
         self,
         user_message: str,
     ) -> str:
@@ -376,6 +712,7 @@ class Assistant:
                 return "↩️ Несохранённые операции со скриншотов отменены."
             return await self._preview_screenshots(user_message)
         response = await self.interpret(user_message)
+        self._last_response = response
         if isinstance(response, ConfirmScreenshotTransactionsResponse):
             self._transactions.clear()
             if response.confirmed:
@@ -498,6 +835,7 @@ class Assistant:
             try:
                 answer = await self._handle_transfer(response)
             except ServiceError as error:
+                self._command_failed = True
                 answer = f"⚠️ {error}"
         elif isinstance(
             response,
@@ -515,6 +853,7 @@ class Assistant:
             try:
                 answer = await self._handle_adjustment(response)
             except ServiceError as error:
+                self._command_failed = True
                 answer = f"⚠️ {error}"
         elif isinstance(
             response,
@@ -531,12 +870,18 @@ class Assistant:
             try:
                 answer = await self._handle_savings_goal(response)
             except ServiceError as error:
+                self._command_failed = True
                 answer = f"⚠️ {error}"
         elif isinstance(response, GetReportResponse):
             self._transactions.clear()
             if self._report_service is None:
                 raise ServiceError("Отчёты недоступны в этом подключении.")
             report = await self._report_service.get(response.arguments)
+            self._dialog.last_report = GetReportCommand(
+                date_from=report.date_from,
+                date_to=report.date_to,
+                format=response.arguments.format,
+            )
             answer = ReportService.format_text(report)
             if response.arguments.format == "image":
                 try:
@@ -567,6 +912,7 @@ class Assistant:
             try:
                 answer = await self._handle_account(response)
             except ServiceError as error:
+                self._command_failed = True
                 answer = f"⚠️ {error}"
         elif isinstance(
             response,
@@ -583,6 +929,7 @@ class Assistant:
             try:
                 answer = await self._handle_debt(response)
             except ServiceError as error:
+                self._command_failed = True
                 answer = f"⚠️ {error}"
         elif isinstance(response, DeleteTransactionResponse):
             answer = await self._prepare_transaction_deletion(response)
@@ -617,6 +964,7 @@ class Assistant:
             try:
                 answer = await self._create_transactions(response)
             except (AccountNotFoundError, AccountUnavailableError) as error:
+                self._command_failed = True
                 answer = f"⚠️ {error}"
         elif isinstance(response, (ClarifyResponse, TextResponse)):
             if isinstance(response, TextResponse):
@@ -624,9 +972,6 @@ class Assistant:
             answer = response.message
         else:
             raise TypeError(f"Unsupported AI response: {type(response).__name__}")
-
-        if self._memory is not None:
-            self._memory.add(user_message, response.model_dump_json())
 
         return answer
 
@@ -992,8 +1337,26 @@ class Assistant:
     async def handle_attachments(
         self, documents: list[DocumentInput], user_message: str = ""
     ) -> str:
+        token = request_context.set(next(_request_numbers))
+        self._dialog.active_scenario = "screenshots"
+        task = self._dialog.tasks.setdefault(
+            "screenshots", TaskState(started_turn=request_context.get())
+        )
+        try:
+            return await self._handle_attachments(documents, user_message)
+        finally:
+            logger.info(
+                "AI task turn=%s task=%s scenario=screenshots status=recognition",
+                request_context.get(),
+                task.started_turn,
+            )
+            request_context.reset(token)
+
+    async def _handle_attachments(
+        self, documents: list[DocumentInput], user_message: str = ""
+    ) -> str:
         self.report_images = []
-        self._screenshots.ready = False
+        self._invalidate_confirmation()
         self._transactions.clear()
         if (
             not documents
@@ -1159,16 +1522,33 @@ class Assistant:
                 "(например, «да» или «сохранить операции»), укажите исправления или отмените импорт."
             )
         answer = "\n".join(lines)
-        if self._memory is not None:
+        self._dialog.active_scenario = "screenshots"
+        candidates = self._confirmation_candidates()
+        self._dialog.confirmation = (
+            next(iter(candidates.items())) if len(candidates) == 1 else None
+        )
+        if self._memory is not None and not self._handling_message:
             self._memory.add(
                 user_message or "[Присланы скриншоты операций]",
                 ClarifyResponse(action="clarify", message=answer).model_dump_json(),
+                scenario="screenshots",
             )
         return answer
 
     async def _confirm_screenshots(self, user_message: str) -> str:
         state = self._screenshots
-        if not state.ready or not state.drafts:
+        candidates = self._confirmation_candidates()
+        if (
+            not state.ready
+            or not state.drafts
+            or len(candidates) != 1
+            or self._dialog.confirmation
+            != (
+                "confirm_screenshot_transactions",
+                candidates.get("confirm_screenshot_transactions"),
+            )
+        ):
+            state.ready = False
             return "Сначала проверьте готовый список: напишите «продолжить скриншоты»."
         state.ready = False
         messages: list[str] = []
@@ -1185,6 +1565,7 @@ class Assistant:
                         CreateIncomingTransactionCommand.model_validate(arguments)
                     )
             except (ServiceError, SQLAlchemyError, ValidationError):
+                self._command_failed = True
                 return (
                     "\n".join(messages)
                     + f"\n⚠️ Осталось несохранённых операций: {len(state.drafts)}. Проверьте счёт, категорию и валюту: «продолжить скриншоты». Уже добавленные строки повторно не сохранятся."
@@ -1199,7 +1580,7 @@ class Assistant:
                 messages.append(self._format_history_warnings(saved.history_warnings))
         state.clear()
         answer = "\n".join(messages)
-        if self._memory is not None:
+        if self._memory is not None and not self._handling_message:
             self._memory.add(
                 user_message,
                 TextResponse(action="respond", message=answer).model_dump_json(),

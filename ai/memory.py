@@ -2,6 +2,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Literal
 
+from ai.models import Scenario, TaskDraft
 from schemas.balance_adjustment import (
     AccountReconciliationResult,
     BalanceAdjustmentReversalResult,
@@ -12,6 +13,7 @@ from schemas.debt import DebtResult
 from schemas.document import ScreenshotTransactionDraft
 from schemas.expense_transaction import ExpenseTransactionResult
 from schemas.incoming_transaction import IncomingTransactionResult
+from schemas.report import GetReportCommand
 from schemas.transaction import TransactionChanges
 from schemas.transfer_transaction import (
     GetTransferTransactionsCommand,
@@ -85,6 +87,17 @@ class ChatMessage:
 class ConversationPair:
     user_message: str
     assistant_message: str
+    scenario: Scenario | None = None
+
+
+@dataclass(slots=True)
+class TaskState:
+    draft: TaskDraft = field(default_factory=TaskDraft)
+    request: str = ""
+    question: str = ""
+    awaiting_answer: bool = False
+    result: str = ""
+    started_turn: int | None = None
 
 
 class ConversationMemory:
@@ -95,24 +108,44 @@ class ConversationMemory:
         self._pairs: deque[ConversationPair] = deque(maxlen=max_pairs)
         self.transactions = TransactionState()
         self.screenshots = ScreenshotState()
+        self.active_scenario: Scenario | None = None
+        self.tasks: dict[Scenario, TaskState] = {}
+        self.last_report: GetReportCommand | None = None
+        self.confirmation: tuple[str, str] | None = None
 
-    def add(self, user_message: str, assistant_message: str) -> None:
+    def add(
+        self,
+        user_message: str,
+        assistant_message: str,
+        *,
+        scenario: Scenario | None = None,
+    ) -> None:
         self._pairs.append(
             ConversationPair(
                 user_message=user_message,
                 assistant_message=assistant_message,
+                scenario=scenario,
             )
         )
 
-    def messages(self) -> tuple[ChatMessage, ...]:
+    def messages(
+        self, max_bytes: int = 12000, *, scenario: Scenario | None = None
+    ) -> tuple[ChatMessage, ...]:
+        # UTF-8 bytes are a conservative budget estimate, not an exact token count.
         messages: list[ChatMessage] = []
-
-        for pair in self._pairs:
-            messages.extend(
-                (
-                    ChatMessage(role="user", content=pair.user_message),
-                    ChatMessage(role="assistant", content=pair.assistant_message),
-                )
+        used = 0
+        for pair in reversed(self._pairs):
+            if scenario is not None and pair.scenario not in (None, scenario):
+                continue
+            size = len(pair.user_message.encode()) + len(
+                pair.assistant_message.encode()
+            )
+            if used + size > max_bytes:
+                break
+            used += size
+            messages[0:0] = (
+                ChatMessage(role="user", content=pair.user_message),
+                ChatMessage(role="assistant", content=pair.assistant_message),
             )
 
         return tuple(messages)
@@ -122,3 +155,7 @@ class ConversationMemory:
         self.transactions.clear()
         self.screenshots.clear()
         self.screenshots.processed.clear()
+        self.active_scenario = None
+        self.tasks.clear()
+        self.last_report = None
+        self.confirmation = None

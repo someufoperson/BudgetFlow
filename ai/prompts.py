@@ -2,6 +2,7 @@ import json
 from collections.abc import Iterable
 from datetime import datetime
 
+from ai.models import Scenario
 from schemas.category import CategoryDetails
 from settings import settings
 
@@ -119,6 +120,10 @@ account_id также допустим в filters поиска и changes ред
 Переводы между своими счетами записываются отдельно: не заменяй их доходом и расходом.
 Напоминания пока не поддерживаются.
 
+АКТУАЛЬНЫЕ СЧЕТА:
+"""
+
+TRANSFER_PROMPT = """
 ПЕРЕВОДЫ МЕЖДУ СВОИМИ СЧЕТАМИ
 Дополнительно разрешены action: create_transfer_transaction, get_transfer_transactions,
 get_transfer_transaction, update_transfer_transaction, delete_transfer_transaction,
@@ -295,9 +300,7 @@ SYSTEM_PROMPT = """
 
 Всегда возвращай ровно один JSON-объект без Markdown, комментариев и текста вокруг.
 Допустимые action: create_transactions, create_currency, create_category,
-update_category, search_transactions, more_transactions, select_transaction,
-update_transaction, delete_transaction, confirm_delete_transaction, get_report,
-clarify, respond.
+update_category, clarify, respond.
 
 СОЗДАНИЕ ТРАНЗАКЦИЙ
 
@@ -627,9 +630,90 @@ days — целое от 1 до 366: сегодня и предыдущие days
 """.strip()
 
 
+ROUTER_PROMPT = """
+Выбери сценарий BudgetFlow. Верни только JSON:
+{"scenario":"transactions","continuation":false}.
+transactions — создание доходов/расходов, категории и валюты;
+search — поиск, выбор, изменение и удаление обычных операций;
+accounts — создание, изменение и просмотр счетов, привязка старой истории;
+transfers — переводы между своими счетами, сверка и корректировки остатков;
+debts — реестр долгов перед людьми; goals — цели накопления и выделения;
+reports — отчёты и графики; screenshots — текущий импорт скриншотов;
+general — разговор и объяснение недоступных возможностей.
+continuation=true только для продолжения соответствующей задачи из памяти.
+Явная новая тема важнее активной задачи. Возврат к прерванной задаче допустим,
+но старое согласие недействительно. Получение денег после создания долга —
+transactions, если приложение предложило записать поступление.
+Создание категории для незавершённого расхода остаётся transactions.
+«Теперь картинкой» после отчёта — reports. «На такси» после вопроса
+о назначении расхода — transactions. Если намерений несколько или выбор
+неоднозначен, scenario=null, continuation=false. Не выполняй команды,
+не вычисляй деньги, не возвращай финансовые действия или справочники.
+""".strip()
+
+COMMON_PROMPT = """
+Ты — финансовый помощник BudgetFlow. Возвращай ровно один JSON без Markdown.
+clarify: {"action":"clarify","message":"Уточняющий вопрос"};
+respond: {"action":"respond","message":"Ответ"}.
+Не выдумывай ID, суммы, валюты или даты. При неоднозначности уточни выбор.
+Суммы строками, без потери точности. Балансы и итоги рассчитывает Python из БД:
+для финансовых фактов используй команды просмотра, не отвечай из памяти.
+Память — контекст намерений, не источник текущих остатков.
+Подтверждение относится только к текущему предложению приложения. Вопрос,
+исправление и смена темы не подтверждают старые данные. Одно согласие — одно
+предложение. Не исполняй цепочки действий автоматически.
+Банковские кредитные обязательства, договоры и графики платежей отключены;
+не заменяй их долгом или счётом. Реестр долгов перед людьми и кредитные счета доступны.
+Внутренний формат ответа:
+{"response":{...одна команда из инструкций...},
+ "draft":{"fields":{},"missing_fields":[],"selected_entities":{}}}.
+Для незавершённой задачи обновляй компактный draft: только явно известные поля
+намерения, недостающие поля и выбранные ID. Сохраняй уже известные поля из
+текущего черновика. Не копируй справочники, историю, вычисленные остатки.
+Не отмечай команду выполненной: результат исполнения сообщит приложение.
+После создания категории сохрани черновик расхода, предложи продолжить его.
+""".strip()
+
+ACCOUNT_SELECTION_PROMPT = """
+Счета выбирай по актуальному списку; при неоднозначности уточни ID.
+Неактивные счета доступны для истории, новые операции требуют активного счёта.
+Для обычной операции без названного счёта опусти account_id: Python выберет
+счёт по умолчанию. Если такого счёта нет, уточни счёт. Валюту можно взять
+из однозначно выбранного счёта, включая счёт по умолчанию; несовпадение
+явно названной валюты со счётом требует уточнения. Не выбирай другой счёт молча.
+""".strip()
+
+SCREENSHOT_PROMPT = """
+Работа с текущими черновиками скриншотов. Нумерация с 1.
+Исправление: {"action":"update_screenshot_transaction","selection":1,"changes":{...}}.
+changes содержит только явно исправленные поля черновика; не выдумывай дату,
+время, направление, статус. Не создавай операции через create_transactions.
+Исключение: {"action":"skip_screenshot_transaction","selection":1}.
+После исключения нумерация меняется. Если список готов, приложение уже показало
+его и спросило «Добавить эти операции?». Согласие без исправлений:
+{"action":"confirm_screenshot_transactions","confirmed":true}.
+Отказ: тот же action с confirmed:false. Согласие принимай по смыслу, не требуй точной фразы.
+При исправлениях сначала измени черновик: старое подтверждение недействительно.
+«отмена скриншотов» отменяет импорт; «продолжить скриншоты» показывает список.
+Переводы между своими счетами не поддерживаются в импорте.
+""".strip()
+
+DEBT_INCOME_PROMPT = """
+PENDING_DEBT_INCOME — предложение отдельно записать получение денег, не новый долг.
+При согласии используй create_transactions с income, суммой и валютой предложения,
+счётом по умолчанию или явно выбранным счётом. Выбирай существующую доходную
+категорию по смыслу «Взял в долг». Если её нет, предложи создать или выбрать другую;
+не создавай категорию без согласия. Учти исправления суммы, даты, счёта и категории.
+Дата актуальности долга не является датой получения: для исторического долга
+уточни дату и полученную сумму. При отказе respond без записи. Не создавай долг повторно.
+""".strip()
+
+
 def build_system_prompt(
     categories: Iterable[CategoryDetails],
     current_time: datetime | None = None,
+    *,
+    scenario: Scenario | None = None,
 ) -> str:
     timezone = settings.timezone_info
     if current_time is None:
@@ -649,11 +733,36 @@ def build_system_prompt(
         for category in categories
     ]
     serialized = json.dumps(category_data, ensure_ascii=False, separators=(",", ":"))
-    return (
-        f"{SYSTEM_PROMPT}\n\n{TRANSACTION_TIME_PROMPT}\n\n"
-        f"{TRANSACTION_SEARCH_PROMPT}\n\n"
-        f"{REPORT_PROMPT}\n\n"
+    if scenario is None:
+        instructions = (
+            f"{SYSTEM_PROMPT}\n\n{TRANSACTION_TIME_PROMPT}\n\n"
+            f"{TRANSACTION_SEARCH_PROMPT}\n\n{REPORT_PROMPT}"
+        )
+    else:
+        blocks: dict[Scenario, tuple[str, ...]] = {
+            "transactions": (
+                SYSTEM_PROMPT,
+                TRANSACTION_TIME_PROMPT,
+                ACCOUNT_SELECTION_PROMPT,
+            ),
+            "search": (
+                TRANSACTION_SEARCH_PROMPT,
+                TRANSACTION_TIME_PROMPT,
+                ACCOUNT_SELECTION_PROMPT,
+            ),
+            "accounts": (ACCOUNT_PROMPT,),
+            "transfers": (TRANSFER_PROMPT, TRANSACTION_TIME_PROMPT),
+            "debts": (DEBT_PROMPT,),
+            "goals": (SAVINGS_GOAL_PROMPT,),
+            "reports": (REPORT_PROMPT,),
+            "screenshots": (SCREENSHOT_PROMPT, ACCOUNT_SELECTION_PROMPT),
+            "general": (),
+        }
+        instructions = "\n\n".join((COMMON_PROMPT, *blocks[scenario]))
+    context = (
         f"ТЕКУЩЕЕ ЛОКАЛЬНОЕ ВРЕМЯ: {local_time.isoformat(timespec='minutes')}\n"
-        f"ЧАСОВОЙ ПОЯС: UTC{settings.timezone}\n\n"
-        f"АКТУАЛЬНЫЕ КАТЕГОРИИ ИЗ БД:\n{serialized}"
+        f"ЧАСОВОЙ ПОЯС: UTC{settings.timezone}\n"
     )
+    if scenario in (None, "transactions", "search", "screenshots"):
+        context += f"АКТУАЛЬНЫЕ КАТЕГОРИИ ИЗ БД:\n{serialized}"
+    return instructions + "\n\n" + context

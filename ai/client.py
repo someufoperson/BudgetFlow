@@ -1,16 +1,24 @@
 import json
+import logging
+from contextvars import ContextVar
+from typing import Literal
 
 import requests
 from pydantic import JsonValue, TypeAdapter
 
 from ai.memory import ChatMessage
+from ai.prompts import ROUTER_PROMPT
 from schemas.document import DocumentPage, ScreenshotResult
 from services.exceptions import ServiceError
 from settings import settings
 
+request_context: ContextVar[int | None] = ContextVar("ai_request", default=None)
+logger = logging.getLogger(__name__)
+
 
 class AIClient:
     _MAX_TOKENS = 2048
+    _MAX_ROUTE_TOKENS = 128
     _MAX_ATTEMPTS = 2
 
     def __init__(self) -> None:
@@ -18,6 +26,42 @@ class AIClient:
         self._api_key = settings.api_key
         self._model = settings.model
         self._document_model = settings.document_model or settings.model
+        self.usage: dict[str, dict[str, int]] = {}
+
+    def _record_usage(
+        self,
+        data: dict[str, JsonValue],
+        stage: Literal["routing", "specialized", "recognition"],
+        attempt: int,
+    ) -> None:
+        usage = data.get("usage")
+        values: dict[str, int | None] = {}
+        for target, source in (
+            ("input", "prompt_tokens"),
+            ("output", "completion_tokens"),
+        ):
+            value = usage.get(source) if isinstance(usage, dict) else None
+            values[target] = value if type(value) is int and value >= 0 else None
+        details = (
+            usage.get("prompt_tokens_details") if isinstance(usage, dict) else None
+        )
+        cached = details.get("cached_tokens") if isinstance(details, dict) else None
+        values["cached"] = cached if type(cached) is int and cached >= 0 else None
+        totals = self.usage.setdefault(stage, {"calls": 0, "retries": 0})
+        totals["calls"] += 1
+        totals["retries"] += int(attempt > 0)
+        for name, count in values.items():
+            key = name + ("_unknown_calls" if count is None else "_known_tokens")
+            totals[key] = totals.get(key, 0) + (1 if count is None else count)
+        logger.info(
+            "AI usage turn=%s stage=%s attempt=%d input=%s output=%s cached=%s",
+            request_context.get(),
+            stage,
+            attempt + 1,
+            values["input"],
+            values["output"],
+            values["cached"],
+        )
 
     def extract_screenshot(self, page: DocumentPage, context: str) -> ScreenshotResult:
         system_prompt = (
@@ -54,9 +98,9 @@ class AIClient:
             "года или счёта по умолчанию. Не используй названия JSON-полей и null "
             "в предупреждениях. Не повторяй вопросы о незаполненных полях: "
             "приложение задаст их само. "
-            + context
             + "\nСхема JSON: "
             + json.dumps(ScreenshotResult.model_json_schema(), ensure_ascii=False)
+            + context
         )
         return ScreenshotResult.model_validate_json(
             self._extract_page(system_prompt, page)
@@ -78,17 +122,22 @@ class AIClient:
             "max_tokens": 16384,
             "stream": False,
         }
-        response = requests.post(
-            self._endpoint,
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=90,
-        )
-        response.raise_for_status()
-        result = TypeAdapter(dict[str, JsonValue]).validate_json(response.text)
+        try:
+            response = requests.post(
+                self._endpoint,
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=90,
+            )
+            response.raise_for_status()
+            result = TypeAdapter(dict[str, JsonValue]).validate_json(response.text)
+        except (requests.RequestException, ValueError):
+            self._record_usage({}, "recognition", 0)
+            raise
+        self._record_usage(result, "recognition", 0)
         choices = result.get("choices")
         if (
             not isinstance(choices, list)
@@ -136,42 +185,74 @@ class AIClient:
         )
 
         for attempt in range(self._MAX_ATTEMPTS):
-            response = requests.post(
-                self._endpoint,
-                headers={
-                    "Authorization": f"Bearer {self._api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": self._model,
-                    "temperature": 0.0,
-                    "messages": messages,
-                    "response_format": {
-                        "type": "json_object",
-                    },
-                    "thinking": {
-                        "type": "disabled",
-                    },
-                    "max_tokens": self._MAX_TOKENS,
-                    "stream": False,
-                },
-                timeout=45,
+            stage: Literal["routing", "specialized"] = (
+                "routing" if system_prompt.startswith(ROUTER_PROMPT) else "specialized"
             )
+            try:
+                response = requests.post(
+                    self._endpoint,
+                    headers={
+                        "Authorization": f"Bearer {self._api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self._model,
+                        "temperature": 0.0,
+                        "messages": messages,
+                        "response_format": {
+                            "type": "json_object",
+                        },
+                        "thinking": {
+                            "type": "disabled",
+                        },
+                        "max_tokens": (
+                            self._MAX_ROUTE_TOKENS
+                            if stage == "routing"
+                            else self._MAX_TOKENS
+                        ),
+                        "stream": False,
+                    },
+                    timeout=45,
+                )
 
-            response.raise_for_status()
+                response.raise_for_status()
 
-            provider_data = response.json()
-            choice = provider_data["choices"][0]
-            content: str | None = choice["message"]["content"]
+                provider_data = TypeAdapter(dict[str, JsonValue]).validate_python(
+                    response.json()
+                )
+            except (requests.RequestException, ValueError):
+                self._record_usage({}, stage, attempt)
+                raise
+            self._record_usage(
+                provider_data,
+                stage,
+                attempt,
+            )
+            choices = provider_data.get("choices")
+            if (
+                not isinstance(choices, list)
+                or not choices
+                or not isinstance(choices[0], dict)
+            ):
+                raise ServiceError("AI не вернул результат запроса.")
+            choice = choices[0]
+            message = choice.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if content is not None and not isinstance(content, str):
+                raise ServiceError("AI вернул некорректный текст ответа.")
 
             if content is not None and content.strip():
+                if choice.get("finish_reason") not in (None, "stop"):
+                    raise ServiceError("Ответ AI неполный. Уточните запрос.")
                 return content
 
             if attempt + 1 == self._MAX_ATTEMPTS:
+                reason = choice.get("finish_reason")
+                if reason not in ("stop", "length", "content_filter"):
+                    reason = "unknown"
                 print(
                     "AI вернул пустой content после двух попыток: "
-                    f"finish_reason={choice.get('finish_reason')!r}, "
-                    f"usage={provider_data.get('usage')!r}",
+                    f"finish_reason={reason!r}",
                     flush=True,
                 )
                 return content or ""
