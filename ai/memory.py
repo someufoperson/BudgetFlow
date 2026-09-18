@@ -2,7 +2,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Literal
 
-from ai.models import Scenario, TaskDraft
+from ai.models import AIResponseType, Scenario, TaskDraft
 from schemas.balance_adjustment import (
     AccountReconciliationResult,
     BalanceAdjustmentReversalResult,
@@ -97,6 +97,9 @@ class TaskState:
     question: str = ""
     awaiting_answer: bool = False
     result: str = ""
+    last_command: AIResponseType | None = None
+    command_result: str = ""
+    command_status: Literal["handled", "failed"] | None = None
     started_turn: int | None = None
 
 
@@ -128,20 +131,16 @@ class ConversationMemory:
             )
         )
 
-    def messages(
-        self, max_bytes: int = 12000, *, scenario: Scenario | None = None
-    ) -> tuple[ChatMessage, ...]:
+    def messages(self, max_bytes: int = 12000) -> tuple[ChatMessage, ...]:
         # UTF-8 bytes are a conservative budget estimate, not an exact token count.
         messages: list[ChatMessage] = []
         used = 0
         for pair in reversed(self._pairs):
-            if scenario is not None and pair.scenario not in (None, scenario):
-                continue
             size = len(pair.user_message.encode()) + len(
                 pair.assistant_message.encode()
             )
             if used + size > max_bytes:
-                break
+                continue
             used += size
             messages[0:0] = (
                 ChatMessage(role="user", content=pair.user_message),

@@ -457,6 +457,8 @@ ai_response_adapter: TypeAdapter[AIResponseType] = TypeAdapter(AIResponseType)
 
 type Scenario = Literal[
     "transactions",
+    "categories",
+    "currencies",
     "search",
     "accounts",
     "transfers",
@@ -476,9 +478,9 @@ class RouteResponse(AIResponse):
 class TaskDraft(AIResponse):
     fields: dict[str, JsonValue] = Field(default_factory=dict)
     missing_fields: list[str] = Field(default_factory=list)
-    selected_entities: dict[str, int] = Field(default_factory=dict)
+    selected_entities: dict[str, int | None] = Field(default_factory=dict)
 
 
 class InterpretResponse(AIResponse):
     response: AIResponseType
-    draft: TaskDraft
+    draft: TaskDraft | None = None

@@ -1,12 +1,13 @@
 import asyncio
 import json
 import logging
+from copy import deepcopy
 from datetime import datetime
 from decimal import ROUND_DOWN, Decimal
 from hashlib import sha256
 from itertools import count
 
-from pydantic import ValidationError
+from pydantic import JsonValue, TypeAdapter, ValidationError
 from requests import RequestException
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -59,6 +60,7 @@ from ai.models import (
     SearchTransactionsResponse,
     SelectTransactionResponse,
     SkipScreenshotTransactionResponse,
+    TaskDraft,
     TextResponse,
     UpdateAccountResponse,
     UpdateCategoryResponse,
@@ -248,23 +250,10 @@ class Assistant:
         )
         if (
             simple_agreement
-            and not candidates
-            and active_task is not None
-            and active_task.awaiting_answer
-            and dialog.active_scenario is not None
+            and confirmation is not None
+            and len(candidates) == 1
+            and candidates.get(confirmation[0]) == confirmation[1]
         ):
-            route = RouteResponse(scenario=dialog.active_scenario, continuation=True)
-        elif simple_agreement:
-            if (
-                confirmation is None
-                or len(candidates) != 1
-                or candidates.get(confirmation[0]) != confirmation[1]
-            ):
-                self._invalidate_confirmation()
-                return ClarifyResponse(
-                    action="clarify",
-                    message="Уточните, какое действие нужно выполнить; прежнее предложение нужно показать заново.",
-                )
             if confirmation[0] != "debt_income":
                 return ai_response_adapter.validate_python(
                     {"action": confirmation[0], "confirmed": text != "нет"}
@@ -275,6 +264,17 @@ class Assistant:
                     action="respond", message="Получение денег не записано."
                 )
             route = RouteResponse(scenario="transactions", continuation=True)
+        elif simple_agreement and (
+            candidates
+            or confirmation is not None
+            or active_task is None
+            or not active_task.awaiting_answer
+        ):
+            self._invalidate_confirmation()
+            return ClarifyResponse(
+                action="clarify",
+                message="Уточните, какое действие нужно выполнить; прежнее предложение нужно показать заново.",
+            )
         elif text == "теперь картинкой" and dialog.last_report is not None:
             self._invalidate_confirmation()
             dialog.active_scenario = "reports"
@@ -315,7 +315,21 @@ class Assistant:
                 )
             try:
                 route = RouteResponse.model_validate_json(raw_route)
-            except ValidationError:
+            except ValidationError as error:
+                logger.warning(
+                    "AI validation turn=%s stage=routing errors=%s",
+                    request_context.get(),
+                    sorted(
+                        {
+                            item["type"]
+                            for item in error.errors(
+                                include_input=False,
+                                include_context=False,
+                                include_url=False,
+                            )
+                        }
+                    ),
+                )
                 route = RouteResponse(scenario=None, continuation=False)
         scenario = route.scenario
         if scenario is None:
@@ -334,21 +348,15 @@ class Assistant:
             not route.continuation or scenario != dialog.active_scenario
         ) and not income_continuation:
             self._invalidate_confirmation()
-        income_task = dialog.tasks.pop("debts", None) if income_continuation else None
+        previous_scenario = dialog.active_scenario
         dialog.active_scenario = scenario
-        if not route.continuation or scenario not in dialog.tasks:
-            dialog.tasks[scenario] = TaskState(
-                request=user_message,
-                started_turn=(
-                    income_task.started_turn
-                    if income_task is not None
-                    else request_context.get()
-                ),
-            )
-        task = dialog.tasks[scenario]
+        task = dialog.tasks.setdefault(
+            scenario,
+            TaskState(request=user_message, started_turn=request_context.get()),
+        )
         categories = (
             await self._category_service.get_all(GetAllCategoriesCommand())
-            if scenario in {"transactions", "search", "screenshots"}
+            if scenario in {"transactions", "categories", "search", "screenshots"}
             else []
         )
         system_prompt = build_system_prompt(categories, scenario=scenario)
@@ -368,52 +376,210 @@ class Assistant:
                 + system_prompt
             )
         system_prompt += await self._scenario_context(scenario)
-        system_prompt += "\nНЕЗАВЕРШЁННАЯ ЗАДАЧА: " + json.dumps(
-            {
-                "request": task.request,
-                "draft": task.draft.model_dump(mode="json"),
-                "question": task.question,
-                "result": task.result,
-            },
-            ensure_ascii=False,
+        context_scenarios = {scenario, previous_scenario}
+        if scenario in {"transactions", "categories"}:
+            context_scenarios.update({"transactions", "categories"})
+        system_prompt += (
+            "\nКОНТЕКСТ ДИАЛОГА (не разрешение на действие): "
+            + json.dumps(
+                {
+                    name: {
+                        "request": item.request,
+                        "draft": item.draft.model_dump(
+                            mode="json", exclude_defaults=True
+                        ),
+                        "question": item.question,
+                        "reply": item.result,
+                        "command": item.last_command.model_dump(mode="json")
+                        if item.last_command
+                        else None,
+                        "command_result": item.command_result,
+                        "command_status": item.command_status,
+                    }
+                    for name, item in dialog.tasks.items()
+                    if name in context_scenarios
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
         )
-        if self._memory is None:
-            raw_response = await asyncio.to_thread(
-                self._client.complete, system_prompt, user_message
-            )
-        else:
-            raw_response = await asyncio.to_thread(
-                self._client.complete,
-                system_prompt,
-                user_message,
-                self._memory.messages(scenario=scenario),
-            )
         previous_draft = task.draft
+        updated_draft = previous_draft
+        draft_data: JsonValue = None
         try:
-            try:
-                interpreted = InterpretResponse.model_validate_json(raw_response)
-            except ValidationError:
-                response = ai_response_adapter.validate_json(raw_response)
-                if task.request != user_message:
-                    task.request += "\n" + user_message
-            else:
-                if len(interpreted.draft.model_dump_json().encode()) > 16000:
-                    raise ValueError("Task draft exceeds context budget")
-                task.draft = interpreted.draft
-                response = interpreted.response
-        except (ValidationError, ValueError):
+            for attempt in range(2):
+                if self._memory is None:
+                    raw_response = await asyncio.to_thread(
+                        self._client.complete, system_prompt, user_message
+                    )
+                else:
+                    raw_response = await asyncio.to_thread(
+                        self._client.complete,
+                        system_prompt,
+                        user_message,
+                        self._memory.messages(),
+                    )
+                payload = TypeAdapter(dict[str, JsonValue]).validate_json(raw_response)
+                draft_data = None
+                if "response" in payload:
+                    draft_data = payload.pop("draft", None)
+                    response = InterpretResponse.model_validate(payload).response
+                else:
+                    response = ai_response_adapter.validate_python(payload)
+                if scenario != "search":
+                    break
+                if isinstance(response, TextResponse) and text in {
+                    "отмена",
+                    "отмени",
+                    "отменить",
+                    "не надо",
+                }:
+                    self._invalidate_confirmation()
+                    self._transactions.pending_changes = None
+                    draft_data = None
+                    response = TextResponse(action="respond", message="Отменено.")
+                    break
+                if attempt == 0 and isinstance(response, TextResponse):
+                    self._invalidate_confirmation()
+                    self._transactions.pending_changes = None
+                    logger.warning(
+                        "AI validation turn=%s stage=action scenario=search action=respond retry=1",
+                        request_context.get(),
+                    )
+                    system_prompt += (
+                        "\nПредыдущий ответ respond не выполнил запрос. "
+                        "Верни команду просмотра search_transactions, more_transactions "
+                        "или select_transaction без apply_changes=true. "
+                        "Сохрани все условия и количество из запроса пользователя. "
+                        "Не обещай показать данные и не составляй список сам. "
+                        "Если требуется уточнение, отмена или изменение данных, "
+                        "верни clarify: повторная попытка разрешает только просмотр."
+                    )
+                    continue
+                if attempt == 1 and not (
+                    isinstance(
+                        response,
+                        (
+                            SearchTransactionsResponse,
+                            MoreTransactionsResponse,
+                            ClarifyResponse,
+                        ),
+                    )
+                    or isinstance(response, SelectTransactionResponse)
+                    and not response.apply_changes
+                ):
+                    logger.warning(
+                        "AI validation turn=%s stage=action scenario=search action=%s retry=exhausted",
+                        request_context.get(),
+                        response.action,
+                    )
+                    self._invalidate_confirmation()
+                    self._command_failed = True
+                    return ClarifyResponse(
+                        action="clarify",
+                        message="Не удалось получить команду просмотра от модели. Список операций не загружен.",
+                    )
+                break
+            if isinstance(response, ClarifyResponse) and task.request != user_message:
+                task.request += "\n" + user_message
+        except ValidationError as error:
+            logger.warning(
+                "AI validation turn=%s stage=command scenario=%s errors=%s",
+                request_context.get(),
+                scenario,
+                sorted(
+                    {
+                        item["type"]
+                        for item in error.errors(
+                            include_input=False,
+                            include_context=False,
+                            include_url=False,
+                        )
+                    }
+                ),
+            )
             self._invalidate_confirmation()
+            self._command_failed = True
             return ClarifyResponse(
                 action="clarify",
-                message="Не удалось надёжно разобрать запрос. Уточните действие и его параметры.",
+                message="Модель вернула некорректный ответ. Действие не выполнено. Попробуйте повторить запрос.",
             )
+        if draft_data is not None:
+            try:
+                changes = TaskDraft.model_validate(draft_data)
+                fields = deepcopy(previous_draft.fields)
+                field_updates: list[
+                    tuple[dict[str, JsonValue], dict[str, JsonValue]]
+                ] = [(fields, changes.fields)]
+                while field_updates:
+                    target, updates = field_updates.pop()
+                    for key, value in updates.items():
+                        existing_value = target.get(key)
+                        if isinstance(existing_value, dict) and isinstance(value, dict):
+                            field_updates.append((existing_value, value))
+                        else:
+                            target[key] = value
+                updated_draft = TaskDraft(
+                    fields=fields,
+                    missing_fields=(
+                        changes.missing_fields
+                        if "missing_fields" in changes.model_fields_set
+                        else previous_draft.missing_fields
+                    ),
+                    selected_entities=previous_draft.selected_entities
+                    | changes.selected_entities,
+                )
+                if len(updated_draft.model_dump_json().encode()) > 16000:
+                    raise ValueError("Task draft exceeds context budget")
+            except (ValidationError, ValueError) as error:
+                logger.warning(
+                    "AI validation turn=%s stage=draft scenario=%s errors=%s",
+                    request_context.get(),
+                    scenario,
+                    sorted(
+                        {
+                            item["type"]
+                            for item in error.errors(
+                                include_input=False,
+                                include_context=False,
+                                include_url=False,
+                            )
+                        }
+                    )
+                    if isinstance(error, ValidationError)
+                    else ["draft_budget_exceeded"],
+                )
+                updated_draft = previous_draft
+                if not isinstance(
+                    response,
+                    (
+                        SearchTransactionsResponse,
+                        MoreTransactionsResponse,
+                        GetAccountResponse,
+                        GetAccountsResponse,
+                        GetDebtResponse,
+                        GetDebtsResponse,
+                        GetSavingsGoalResponse,
+                        GetSavingsGoalsResponse,
+                        GetTransferTransactionResponse,
+                        GetTransferTransactionsResponse,
+                        GetBalanceAdjustmentResponse,
+                        GetBalanceAdjustmentsResponse,
+                        GetReportResponse,
+                        ClarifyResponse,
+                        TextResponse,
+                    ),
+                ):
+                    self._invalidate_confirmation()
+                    self._command_failed = True
+                    return ClarifyResponse(
+                        action="clarify",
+                        message="Модель вернула некорректный ответ. Действие не выполнено. Попробуйте повторить запрос.",
+                    )
         allowed: dict[Scenario, set[str]] = {
-            "transactions": {
-                "create_transactions",
-                "create_category",
-                "update_category",
-                "create_currency",
-            },
+            "transactions": {"create_transactions"},
+            "categories": {"create_category", "update_category"},
+            "currencies": {"create_currency"},
             "search": {
                 "search_transactions",
                 "more_transactions",
@@ -470,6 +636,12 @@ class Assistant:
             "general": set(),
         }
         if response.action not in allowed[scenario] | {"clarify", "respond"}:
+            logger.warning(
+                "AI validation turn=%s stage=scenario scenario=%s action=%s",
+                request_context.get(),
+                scenario,
+                response.action,
+            )
             self._invalidate_confirmation()
             return ClarifyResponse(
                 action="clarify",
@@ -480,7 +652,7 @@ class Assistant:
             if current and (
                 dialog.confirmation is None
                 or len(current) != 1
-                or task.draft != previous_draft
+                or updated_draft != previous_draft
                 or dialog.confirmation
                 != (response.action, current.get(response.action))
             ):
@@ -489,12 +661,16 @@ class Assistant:
                     action="clarify",
                     message="Предложение изменилось или устарело. Сначала запросите его повторный показ.",
                 )
+        task.draft = updated_draft
         self._clarification_pending = isinstance(response, ClarifyResponse)
         return response
 
     async def _scenario_context(self, scenario: Scenario) -> str:
         parts: list[str] = []
-        if scenario not in {"reports", "general"} and self._account_service is not None:
+        if (
+            scenario not in {"reports", "general", "categories", "currencies"}
+            and self._account_service is not None
+        ):
             accounts = await self._account_service.get_all(
                 GetAllAccountsCommand(include_inactive=True)
             )
@@ -663,31 +839,20 @@ class Assistant:
             )
             task.result = str(outcome["result"])
             task.awaiting_answer = self._clarification_pending
-            completed = (
-                not self._command_failed
-                and not isinstance(response, ClarifyResponse)
-                and not (
-                    isinstance(response, CreateCategoryResponse)
-                    and (
-                        task.draft.missing_fields
-                        or "amount" in task.draft.fields
-                        or task.question
-                    )
-                )
-                and not self._confirmation_candidates()
-            )
+            if response is not None and not isinstance(
+                response, (ClarifyResponse, TextResponse)
+            ):
+                task.last_command = response
+                task.command_result = str(outcome["result"])
+                task.command_status = "failed" if self._command_failed else "handled"
             logger.info(
-                "AI task turn=%s task=%s scenario=%s status=%s completed=%s",
+                "AI conversation turn=%s scenario=%s status=%s",
                 request_context.get(),
-                task.started_turn,
                 dialog.active_scenario,
                 outcome["status"],
-                completed,
             )
             if isinstance(response, ClarifyResponse):
                 task.question = response.message
-            elif completed:
-                dialog.tasks.pop(dialog.active_scenario, None)
         candidates = self._confirmation_candidates()
         dialog.confirmation = (
             next(iter(candidates.items())) if len(candidates) == 1 else None
@@ -873,7 +1038,7 @@ class Assistant:
                 self._command_failed = True
                 answer = f"⚠️ {error}"
         elif isinstance(response, GetReportResponse):
-            self._transactions.clear()
+            self._invalidate_confirmation()
             if self._report_service is None:
                 raise ServiceError("Отчёты недоступны в этом подключении.")
             report = await self._report_service.get(response.arguments)
@@ -1975,6 +2140,10 @@ class Assistant:
             messages.append(await self._format_transaction_balance(saved))
             self._transactions.pending_debt_income = None
 
+        task = self._dialog.tasks.get("transactions")
+        if task is not None:
+            task.draft = TaskDraft()
+            task.question = ""
         return "\n".join(messages)
 
     async def _format_transaction_balance(self, transaction: TransactionResult) -> str:
